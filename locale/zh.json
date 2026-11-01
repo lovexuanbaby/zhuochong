@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "桌宠桥接器",
+    "description": "启动可配置的 Python 桌宠进程，通过标准输入输出交换逐行 JSON 消息。"
+  }
+}

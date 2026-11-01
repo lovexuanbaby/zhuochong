@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Deskpet Bridge",
+    "description": "Starts a configurable Python desktop-pet process and exchanges newline-delimited JSON over stdio."
+  }
+}

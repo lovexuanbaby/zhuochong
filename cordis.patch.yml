@@ -1,0 +1,12 @@
+# Minimal local test bundle for the deskpet Python process.
+# pythonPath is the interpreter that runs python/deskpet_bridge.py.
+# The script path itself is derived from this plugin's install location.
+- insert:
+    - id: deskpet
+      name: dsh-deskpet
+      config:
+        pythonPath: 'C:\Users\chen1\AppData\Local\Programs\Python\Python314\python.exe'
+        pingIntervalMs: 15000
+        pingTimeoutMs: 5000
+        handshakeTimeoutMs: 5000
+        shutdownTimeoutMs: 3000
