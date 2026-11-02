@@ -124,9 +124,12 @@ def main() -> int:
 
             elif message_type == "pet.state":
                 labels = {
-                    "idle": "桌宠已启动",
+                    "idle": "等待响应中",
                     "thinking": "正在思考……",
                     "done": "任务完成",
+                    "error":"任务失败",
+                    "aborted":"任务中断",
+                    "ended":"任务结束（其他原因）",
                 }
 
                 state = message.get("state")
