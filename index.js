@@ -86,7 +86,7 @@ export class DeskpetBridge {
         PYTHONIOENCODING: 'utf-8',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
+      windowsHide: false,
     })
     this.child = child
 
