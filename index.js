@@ -351,7 +351,53 @@ export class DeskpetBridge {
 export async function apply(ctx, config) {
   const options = normalizeConfig(config)
   const bridge = new DeskpetBridge(ctx, options)
+  // 记录当前关注的会话和轮次
+  let watchedTurn = null;
 
+  // 把 DSH 的结束原因转换成桌宠状态
+  const resultStates = new Map([
+    ["completed", "done"],
+    ["error", "error"],
+    ["aborted", "aborted"],
+  ]);
+
+  function showPetState(state) {
+    if (
+      !bridge.child?.stdin.writable ||
+      bridge.stopping ||
+      bridge.exited
+    ) {
+      return;
+    }
+
+    bridge.writeMessage({ type: "pet.state", state });
+  }
+
+  ctx.on("session/event", (session, event) => {
+    // 一轮任务开始
+    if (event.type === "turn/start") {
+      watchedTurn = {
+        sessionId: session.id,
+        turn: event.data.turn,
+      };
+
+      showPetState("thinking");
+      return;
+    }
+
+    // 只处理当前关注的这一轮结束事件
+    if (
+      event.type !== "turn/end" ||
+      !watchedTurn ||
+      session.id !== watchedTurn.sessionId ||
+      event.data.turn !== watchedTurn.turn
+    ) {
+      return;
+    }
+
+    const reason = event.data.reason?.kind;
+    showPetState(resultStates.get(reason) ?? "ended");
+  });
   ctx.effect(() => {
     bridge.start()
     return () => bridge.stop()
