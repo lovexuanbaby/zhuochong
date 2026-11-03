@@ -135,7 +135,7 @@ def main() -> int:
                 state = message.get("state")
 
                 if isinstance(state, str) and state in labels:
-                    window.set_status(labels[state])
+                    window.set_status(labels[state], state)
                 else:
                     log("收到未知的桌宠状态")
 
