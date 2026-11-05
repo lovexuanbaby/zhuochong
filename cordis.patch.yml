@@ -5,8 +5,28 @@
     - id: deskpet
       name: dsh-deskpet
       config:
-        pythonPath: 'C:\Users\chen1\AppData\Local\Programs\Python\Python314\python.exe'
+        pythonPath: 'C:\Users\WU\Documents\deepseek-harness\default-workspace\.venvs\deskpet\Scripts\python.exe'
         pingIntervalMs: 15000
         pingTimeoutMs: 5000
         handshakeTimeoutMs: 5000
         shutdownTimeoutMs: 3000
+        # 桌宠对话直接用 DSH 已配置的模型（默认取 agentDefaultModel），
+        # 不创建会话、不写 DSH 聊天记录。需要固定模型时可显式指定：
+        # chatProvider: deepseek-account
+        # chatModel: deepseek-flash
+        # 带进模型上下文的最近消息数（决定“记得多少”）。
+        chatHistoryMessages: 40
+        # 落盘保存并显示在桌宠窗口里的历史上限；重启/重开对话框后恢复。
+        chatHistoryMaxMessages: 200
+        # 历史文件默认在 $DSH_HOME/deskpet/chat-history.json，可显式覆盖：
+        # chatHistoryPath: 'C:\Users\you\.dsh\deskpet\chat-history.json'
+        # 长期记忆（越聊越懂你）：每 N 轮聊天提炼一次“用户画像”，之后每次回复都带上。
+        chatMemoryEnabled: true
+        chatMemoryUpdateEveryTurns: 4
+        chatMemoryMaxFacts: 40
+        chatMemoryTranscriptMessages: 24
+        # 记忆文件默认在 $DSH_HOME/deskpet/user-memory.json，可显式覆盖：
+        # chatMemoryPath: 'C:\Users\you\.dsh\deskpet\user-memory.json'
+        # 单条回复的 token 上限与等待超时（毫秒）。
+        chatMaxTokens: 1024
+        chatTimeoutMs: 180000
