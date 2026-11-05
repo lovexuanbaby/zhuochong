@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import math
 import random
+import sys
+from datetime import datetime
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import (
@@ -30,7 +32,19 @@ from PySide6.QtGui import (
     QPen,
     QRadialGradient,
 )
-from PySide6.QtWidgets import QApplication, QMenu, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 # 画布尺寸：上方留给气泡，下方是机器人和它的线缆
 CANVAS_W = 260
@@ -66,6 +80,449 @@ def _lerp(a: float, b: float, k: float) -> float:
     return a + (b - a) * k
 
 
+# ---------------------------------------------------------------- 对话框配色
+CHAT_BG_TOP = "#132630"
+CHAT_BG_BOTTOM = "#0b151a"
+CHAT_BORDER = "#2fb8a6"
+CHAT_TITLE = "#dff7f2"
+CHAT_MUTED = "#7fa9b5"
+CHAT_INPUT_BG = "#0b1b21"
+
+UI_FONT = "Microsoft YaHei UI"
+
+WELCOME_TEXT = (
+    "嗨，我是你的桌宠，会记住我们聊过的话～"
+    "直接跟我聊就行，用的是 DSH 里配置的模型，聊天记录只留在这个窗口。"
+)
+
+
+def _force_topmost(widget: QWidget) -> None:
+    """Re-assert the native topmost flag once a window handle exists.
+
+    Qt's ``WindowStaysOnTopHint`` does not always survive the layered-window
+    creation on Windows, so set ``HWND_TOPMOST`` explicitly.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        hwnd_value = int(widget.winId())
+        if hwnd_value == 0:  # offscreen/minimal 平台没有原生窗口
+            return
+        user32 = ctypes.windll.user32
+        user32.SetWindowPos.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint,
+        ]
+        user32.SetWindowPos.restype = ctypes.c_int
+        hwnd = ctypes.c_void_p(hwnd_value)
+        hwnd_topmost = ctypes.c_void_p(0xFFFFFFFFFFFFFFFF)
+        user32.SetWindowPos(
+            hwnd,
+            hwnd_topmost,
+            0,
+            0,
+            0,
+            0,
+            0x0001 | 0x0002 | 0x0010,  # NOSIZE | NOMOVE | NOACTIVATE
+        )
+    except Exception:
+        pass
+
+
+class _DragBar(QWidget):
+    """Title strip that moves a frameless window through the window manager."""
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if event.button() == Qt.MouseButton.LeftButton:
+            handle = self.window().windowHandle()
+            if handle is not None and handle.startSystemMove():
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+
+class ChatDialog(QDialog):
+    """和桌宠的对话窗口：消息列表 + 输入行，收发都走 JSON 行协议。
+
+    对外接口（由 ``deskpet_bridge`` 调用）：
+    - ``submit()``：把输入框内容交给 ``PetWindow.on_chat_submit``；
+    - ``accepted()``：DSH 已接收，切换到“思考中”；
+    - ``finish(text, ok=True)``：显示回复或错误并恢复输入；
+    - ``messages``：只读的历史记录，方便冒烟测试。
+    """
+
+    def __init__(self, owner: "PetWindow") -> None:
+        super().__init__(None)
+        self._owner = owner
+        self._pending = False
+        self._messages: list[tuple[str, str]] = []
+        self._last_date: str | None = None
+        self._memory_count = 0
+        self._status_base = ""
+        self._status_dots = 0
+        self._status_timer = QTimer(self)
+        self._status_timer.timeout.connect(self._tick_status)
+
+        self.setWindowTitle("桌宠对话")
+        self.setWindowFlags(
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFixedSize(382, 470)
+        self._build_ui()
+
+    # ---------------------------------------------------------------- 构建界面
+    def _build_ui(self) -> None:
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 12, 14, 14)
+        outer.setSpacing(8)
+
+        title_bar = _DragBar(self)
+        title_layout = QHBoxLayout(title_bar)
+        title_layout.setContentsMargins(2, 0, 0, 0)
+        title_layout.setSpacing(8)
+        dot = QLabel("●", title_bar)
+        dot.setStyleSheet(f"color: {TEAL_MID}; font-size: 9pt;")
+        title = QLabel("桌宠对话", title_bar)
+        title.setStyleSheet(
+            f"color: {CHAT_TITLE}; font: 600 12pt '{UI_FONT}';"
+        )
+        hint = QLabel("直接用 DSH 配置的模型回复", title_bar)
+        hint.setStyleSheet(
+            f"color: {CHAT_MUTED}; font: 9pt '{UI_FONT}';"
+        )
+        self._hint = hint
+        close_btn = QPushButton("✕", title_bar)
+        close_btn.setFixedSize(24, 24)
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        # 标题栏的关闭键不能抢 Enter：否则在输入框按 Enter 会同时发送并关窗。
+        close_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        close_btn.setAutoDefault(False)
+        close_btn.setDefault(False)
+        close_btn.setStyleSheet(
+            "QPushButton { border: none; background: transparent;"
+            f" color: {CHAT_MUTED}; font: 12pt '{UI_FONT}'; }}"
+            f"QPushButton:hover {{ color: #ff9b96; }}"
+        )
+        close_btn.clicked.connect(self.hide)
+        title_layout.addWidget(dot)
+        title_layout.addWidget(title)
+        title_layout.addStretch(1)
+        title_layout.addWidget(hint)
+        title_layout.addWidget(close_btn)
+        outer.addWidget(title_bar)
+
+        self._scroll = QScrollArea(self)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollBar:vertical { width: 6px; background: transparent; }"
+            "QScrollBar::handle:vertical { background: rgba(127,182,201,0.35);"
+            " border-radius: 3px; min-height: 24px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+        )
+        self._messages_host = QWidget()
+        self._messages_host.setStyleSheet("background: transparent;")
+        self._messages_layout = QVBoxLayout(self._messages_host)
+        self._messages_layout.setContentsMargins(2, 4, 2, 4)
+        self._messages_layout.setSpacing(8)
+        self._messages_layout.addStretch(1)
+        self._scroll.setWidget(self._messages_host)
+        self._scroll.verticalScrollBar().rangeChanged.connect(self._follow_bottom)
+        outer.addWidget(self._scroll, 1)
+
+        self._status = QLabel("")
+        self._status.setStyleSheet(
+            f"color: {CHAT_MUTED}; font: 9pt '{UI_FONT}'; padding-left: 4px;"
+        )
+        self._status.hide()
+        outer.addWidget(self._status)
+
+        input_row = QHBoxLayout()
+        input_row.setSpacing(8)
+        self._input = QLineEdit(self)
+        self._input.setPlaceholderText("说点什么…（Enter 发送，Esc 收起）")
+        self._input.setFixedHeight(34)
+        self._input.setStyleSheet(
+            "QLineEdit {"
+            f" background: {CHAT_INPUT_BG}; color: #e8fbf7;"
+            " border: 1px solid rgba(79, 211, 192, 0.35); border-radius: 10px;"
+            f" padding: 0 10px; font: 10pt '{UI_FONT}'; }}"
+            "QLineEdit:focus { border: 1px solid rgba(79, 211, 192, 0.85); }"
+            "QLineEdit:disabled { color: rgba(232, 251, 247, 0.45); }"
+        )
+        self._input.returnPressed.connect(self.submit)
+        self._send_btn = QPushButton("发送", self)
+        self._send_btn.setFixedSize(64, 34)
+        self._send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._send_btn.setStyleSheet(
+            "QPushButton {"
+            " background: rgba(79, 211, 192, 0.92); color: #06251f;"
+            " border: none; border-radius: 10px;"
+            f" font: 600 10pt '{UI_FONT}'; }}"
+            "QPushButton:hover { background: #6fe6d4; }"
+            "QPushButton:disabled { background: rgba(79, 211, 192, 0.30);"
+            " color: rgba(6, 37, 31, 0.55); }"
+        )
+        self._send_btn.clicked.connect(self.submit)
+        # Enter 由输入框自己处理，按钮不做 dialog 的默认按钮。
+        self._send_btn.setAutoDefault(False)
+        self._send_btn.setDefault(False)
+        input_row.addWidget(self._input, 1)
+        input_row.addWidget(self._send_btn)
+        outer.addLayout(input_row)
+
+        self._append_bubble(WELCOME_TEXT, "pet")
+
+    # ---------------------------------------------------------------- 绘制
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        painter = QPainter(self)
+        painter.setRenderHints(QPainter.RenderHint.Antialiasing)
+        body = QPainterPath()
+        body.addRoundedRect(
+            QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0), 18.0, 18.0
+        )
+        gradient = QLinearGradient(0.0, 0.0, 0.0, float(self.height()))
+        gradient.setColorAt(0.0, QColor(CHAT_BG_TOP))
+        gradient.setColorAt(1.0, QColor(CHAT_BG_BOTTOM))
+        painter.setPen(QPen(QColor(CHAT_BORDER), 2.0))
+        painter.setBrush(gradient)
+        painter.drawPath(body)
+    # ---------------------------------------------------------------- 对外接口
+    @property
+    def messages(self) -> list[tuple[str, str]]:
+        """已显示的消息 (kind, text)，供测试断言。"""
+        return list(self._messages)
+
+    @property
+    def pending(self) -> bool:
+        """是否正在等待 DSH 回复。"""
+        return self._pending
+
+    def focus_input(self) -> None:
+        self._input.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def accepted(self, base: str = "DSH 正在思考") -> None:
+        """主机侧已接收消息。"""
+        if self._pending:
+            self._show_status(base or "DSH 正在思考")
+
+    def finish(self, text: str, ok: bool = True) -> None:
+        """显示最终回复或错误，并恢复输入。"""
+        self._pending = False
+        self._hide_status()
+        self._append_bubble(
+            text,
+            "pet" if ok else "error",
+            datetime.now().isoformat(),
+        )
+        self._input.setEnabled(True)
+        self._send_btn.setEnabled(True)
+        self._input.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def append_notice(self, text: str, kind: str = "pet") -> None:
+        """不改变等待状态地追加一条消息（例如主机事件提示）。"""
+        self._append_bubble(text, kind)
+
+    def set_history(self, entries: object) -> None:
+        """用落盘历史重建消息列表（插件启动时由宿主调用一次）。"""
+        self._clear_messages()
+        valid: list[tuple[str, str, str | None]] = []
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                role = entry.get("role")
+                text = entry.get("text")
+                when = entry.get("time")
+                if role not in ("user", "assistant"):
+                    continue
+                if not isinstance(text, str) or text.strip() == "":
+                    continue
+                valid.append(
+                    (role, text, when if isinstance(when, str) and when else None)
+                )
+        if not valid:
+            self._append_bubble(WELCOME_TEXT, "pet")
+            QTimer.singleShot(0, self._scroll_to_bottom)
+            return
+        for role, text, when in valid:
+            self._append_bubble(text, "user" if role == "user" else "pet", when)
+        QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def set_memory_count(self, count: int) -> None:
+        """更新标题栏提示：桌宠已经记住了多少件事。"""
+        self._memory_count = max(0, count)
+        if count > 0:
+            self._hint.setText(f"模型回复 · 已记住 {count} 件事")
+        else:
+            self._hint.setText("直接用 DSH 配置的模型回复")
+
+    def _clear_messages(self) -> None:
+        while self._messages_layout.count() > 1:  # 保留末尾弹簧
+            item = self._messages_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._messages.clear()
+        self._last_date = None
+        self._pending = False
+        self._hide_status()
+        self._input.setEnabled(True)
+        self._send_btn.setEnabled(True)
+
+    def submit(self) -> None:
+        text = self._input.text().strip()
+        if not text or self._pending:
+            return
+        self._pending = True
+        self._input.clear()
+        self._input.setEnabled(False)
+        self._send_btn.setEnabled(False)
+        self._append_bubble(text, "user", datetime.now().isoformat())
+        self._show_status("等待 DSH 回复")
+
+        submit = getattr(self._owner, "on_chat_submit", None)
+        if submit is None:
+            self.finish("还没有连接到 DSH（主机插件未接线）", ok=False)
+            return
+        try:
+            submit(text)
+        except Exception as error:  # noqa: BLE001 - 桥接失败必须回显给用户
+            self.finish(f"发送失败：{error}", ok=False)
+
+    # ---------------------------------------------------------------- 内部实现
+    def _append_bubble(self, text: str, kind: str, when: str | None = None) -> None:
+        text = (text or "").strip() or "（空消息）"
+        date_label = self._date_divider_label(when)
+        if date_label is not None:
+            self._append_date_divider(date_label)
+        bubble = QLabel(text)
+        bubble.setWordWrap(True)
+        bubble.setMaximumWidth(256)
+        bubble.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Minimum
+        )
+        bubble.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        colors = {
+            "user": ("rgba(18, 63, 58, 0.96)", "#d9fff8", "rgba(79, 211, 192, 0.65)"),
+            "pet": ("rgba(22, 48, 58, 0.96)", "#dbeef6", "rgba(127, 182, 201, 0.45)"),
+            "error": ("rgba(58, 29, 32, 0.96)", "#ffd2cf", "rgba(232, 114, 111, 0.75)"),
+        }
+        background, foreground, border = colors.get(kind, colors["pet"])
+        bubble.setStyleSheet(
+            "QLabel {"
+            f" background: {background}; color: {foreground};"
+            f" border: 1px solid {border}; border-radius: 12px;"
+            f" padding: 8px 11px; font: 10pt '{UI_FONT}'; }}"
+        )
+        row = QWidget(self._messages_host)
+        row.setStyleSheet("background: transparent;")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(0)
+        if kind == "user":
+            row_layout.addStretch(1)
+            row_layout.addWidget(bubble)
+        else:
+            row_layout.addWidget(bubble)
+            row_layout.addStretch(1)
+        # 插到末尾弹簧之前
+        self._messages_layout.insertWidget(self._messages_layout.count() - 1, row)
+        self._messages.append((kind, text))
+        QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def _date_divider_label(self, when: str | None) -> str | None:
+        """跨天时返回日期分隔文案；同一天返回 None。"""
+        if not isinstance(when, str) or when == "":
+            return None
+        try:
+            stamp = datetime.fromisoformat(when.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        local = stamp.astimezone()
+        key = local.strftime("%Y-%m-%d")
+        if key == self._last_date:
+            return None
+        self._last_date = key
+        return local.strftime("%Y年%m月%d日")
+
+    def _append_date_divider(self, label: str) -> None:
+        divider = QLabel(label)
+        divider.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        divider.setStyleSheet(
+            f"color: {CHAT_MUTED}; font: 8.5pt '{UI_FONT}'; padding: 3px 0;"
+        )
+        wrapper = QWidget(self._messages_host)
+        wrapper.setStyleSheet("background: transparent;")
+        layout = QHBoxLayout(wrapper)
+        layout.setContentsMargins(0, 4, 0, 2)
+        layout.addWidget(divider, 1)
+        self._messages_layout.insertWidget(self._messages_layout.count() - 1, wrapper)
+
+    def _scroll_to_bottom(self) -> None:
+        bar = self._scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _follow_bottom(self, _minimum: int, maximum: int) -> None:
+        """内容长高后自动跟到底部，聊天窗口不需要手动滚。"""
+        self._scroll.verticalScrollBar().setValue(maximum)
+
+    def _show_status(self, base: str) -> None:
+        self._status_base = base
+        self._status_dots = 0
+        self._status.setText(base + "…")
+        self._status.show()
+        self._status_timer.start(420)
+        QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def _hide_status(self) -> None:
+        self._status_timer.stop()
+        self._status.hide()
+        QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def _tick_status(self) -> None:
+        self._status_dots = (self._status_dots + 1) % 3
+        self._status.setText(self._status_base + "." * (self._status_dots + 1))
+
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        super().showEvent(event)
+        _force_topmost(self)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if event.key() == Qt.Key.Key_Escape:
+            self.hide()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def show_near(self, anchor: QWidget) -> None:
+        """打开在桌宠旁边，并夹在可用屏幕范围内。"""
+        screen = anchor.screen() or QApplication.primaryScreen()
+        if screen is None:  # offscreen/minimal 平台没有屏幕信息
+            self.move(0, 0)
+            return
+        area = screen.availableGeometry()
+        x = anchor.x() - self.width() - 14
+        if x < area.left() + 8:
+            x = anchor.x() + anchor.width() + 14
+        y = anchor.y() + anchor.height() - self.height()
+        x = max(area.left() + 8, min(x, area.right() - self.width() - 8))
+        y = max(area.top() + 8, min(y, area.bottom() - self.height() - 8))
+        self.move(x, y)
+
+
 class PetWindow(QWidget):
     def __init__(self) -> None:
         super().__init__()
@@ -98,6 +555,13 @@ class PetWindow(QWidget):
         # 拖动
         self._drag_offset = None
         self._placed = False
+        # 单击判定（区分拖动和点脸打开对话框）
+        self._press_global = None
+        self._press_face = False
+
+        # 对话窗口（惰性创建）与桥接层回调
+        self._chat: ChatDialog | None = None
+        self.on_chat_submit = None
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_tick)
@@ -121,6 +585,56 @@ class PetWindow(QWidget):
 
     def _apply_state_flags(self) -> None:
         self._timer.setInterval(33 if self._state in ACTIVE_STATES else 66)
+
+    # ------------------------------------------------------------------ 对话窗口
+    @property
+    def chat_dialog(self) -> "ChatDialog | None":
+        """当前对话窗口；尚未打开过时为 None。"""
+        return self._chat
+
+    def _ensure_chat(self) -> "ChatDialog":
+        if self._chat is None:
+            self._chat = ChatDialog(self)
+        return self._chat
+
+    def open_chat(self) -> "ChatDialog":
+        """打开（或重新聚焦）对话窗口，放在桌宠旁边。"""
+        dialog = self._ensure_chat()
+        dialog.show_near(self)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        dialog.focus_input()
+        return dialog
+
+    def chat_status(self, text: str) -> None:
+        """主机侧已接收消息，切换为等待/思考提示。"""
+        if self._chat is not None:
+            self._chat.accepted(text)
+
+    def set_chat_history(self, entries: object) -> None:
+        """用落盘历史重建对话框内容（插件启动时调用）。"""
+        self._ensure_chat().set_history(entries)
+
+    def set_memory_count(self, count: object) -> None:
+        """更新“已记住 N 件事”提示，让用户看到桌宠在变懂自己。"""
+        try:
+            value = int(count)
+        except (TypeError, ValueError):
+            value = 0
+        self._ensure_chat().set_memory_count(value)
+
+    def chat_reply(self, text: str, ok: bool = True) -> None:
+        """显示模型回复（或错误）。"""
+        self._ensure_chat().finish(text, ok=ok)
+
+    def chat_error(self, text: str) -> None:
+        """显示发送/会话失败的原因。"""
+        self._ensure_chat().finish(text, ok=False)
+
+    def _face_rect(self) -> QRectF:
+        """屏幕脸在画布内的命中区域（用于点击打开对话框）。"""
+        return QRectF(CANVAS_W / 2.0 - 52.0, 156.0 + 26.0, 104.0, 72.0)
 
     # ------------------------------------------------------------------ 动画主循环
     def _on_tick(self) -> None:
@@ -588,6 +1102,7 @@ class PetWindow(QWidget):
         self._act_top.setCheckable(True)
         self._act_top.setChecked(True)
         self._act_top.triggered.connect(self._toggle_on_top)
+        self._menu.addAction("打开对话框", self.open_chat)
         self._menu.addAction("回到右下角", self._reset_position)
         self._menu.addAction("陪她玩一下", lambda: self.set_status("好开心！", "done"))
 
@@ -610,14 +1125,22 @@ class PetWindow(QWidget):
         y = area.bottom() - self.height() - 12
         self.move(x, y)
 
+    def _ensure_topmost(self) -> None:
+        """Re-assert the native topmost flag once the window handle exists."""
+        _force_topmost(self)
+
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
         if not self._placed:
             self._placed = True
             self._place_default()
+        if self._act_top.isChecked():
+            self._ensure_topmost()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
+            self._press_global = event.globalPosition().toPoint()
+            self._press_face = self._face_rect().contains(event.position())
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
         elif event.button() == Qt.MouseButton.RightButton:
@@ -638,7 +1161,18 @@ class PetWindow(QWidget):
         self._target_look = delta
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self._press_face:
+            # 没怎么移动的点脸 = 打开对话框；拖动不算点击
+            moved = 0
+            if self._press_global is not None:
+                moved = (
+                    event.globalPosition().toPoint() - self._press_global
+                ).manhattanLength()
+            if moved <= 3:
+                self.open_chat()
         self._drag_offset = None
+        self._press_global = None
+        self._press_face = False
 
     def leaveEvent(self, event) -> None:  # noqa: N802
         self._target_look = QPointF(0.0, 0.0)
