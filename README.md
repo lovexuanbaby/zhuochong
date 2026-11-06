@@ -102,6 +102,8 @@ do not change startup or shutdown:
 
 ```json
 {"type":"pet.state","state":"thinking"}
+{"type":"pet.state","state":"thinking","result":{"id":1,"state":"done"}}
+{"type":"pet.state","state":"idle","result":{"id":1,"state":"done"}}
 {"type":"chat","id":7,"text":"帮我看看 README"}
 ```
 
@@ -113,9 +115,30 @@ do not change startup or shutdown:
 {"type":"chat/memory","count":12,"updatedAt":"2026-11-05T09:00:00+08:00"}
 ```
 
-`pet.state` maps the accepted turn lifecycle: `thinking` on `turn/start`,
-`done` on a `completed` turn end, `error` on `error`, `aborted` on `aborted`,
-and `ended` for any other turn end. Chat messages keep the same line framing:
+`pet.state` follows live `agent/status` events (`{ agent, status }`):
+`running` maps to `thinking`; once every observed agent is `idle` (or disposed),
+the activity returns to `idle`. On activation,
+`agents.list()` seeds agents already running; updates received before the Python
+handshake are coalesced and sent after it. Duplicate states do not restart the
+animation, and unloading removes the subscriptions. Agent instances are tracked
+separately so disposing an old instance cannot clear a replacement's busy state.
+`session/event` provides results separately: `turn/end` maps `completed` to
+`done`, `error` to `error`, `aborted` to `aborted`, and other reasons to `ended`.
+Session identity and turn number reject stale/duplicate results. A plugin loaded
+mid-turn can accept the live end of its exact running agent without having seen
+the start; an idle session's history is not replayed.
+
+The optional `result` contains a monotonic `id` and terminal `state`. Python
+keeps the result bubble for 3.8 seconds even when activity becomes idle; it then
+returns to **空闲中，随时待命** (or the thinking bubble if work remains). While
+any agent is running the pet keeps its thinking expression; when idle it can
+briefly play the result animation. Repeating an id does not extend its deadline
+or replay an expired result. A new run or `turn/start` clears the old result
+immediately, including consecutive turns in one running interval. When several
+agents finish, the latest accepted result replaces the previous notification.
+Omitting `result` clears a notification; idle alone never means success.
+Legacy `pet.state` terminal values remain supported by Python.
+Chat messages keep the same line framing:
 `id` is echoed back, `reason` is `completed`/`truncated`, and failures arrive as
 `chat/error` so the dialog never stays pending without an explanation. Chat ids
 are numbered independently from ping ids. `chat/history` carries the persisted
@@ -277,7 +300,13 @@ hand-edit the profile's `package.json` or `cordis.patch.yml` to install it.
 |---|---|---|
 | `tests/chat-host-smoke.mjs` | request shape, context, history persistence, long-term memory, failures, timeout, cleanup | 20/20 |
 | `tests/chat-ui-smoke.py` | dialog submit/reply/continuation/error, history restore, date dividers, memory hint, Enter regression | 23/23 |
-| `tests/bridge-smoke.mjs` | apply cleanup, ping/pong, process exit, idempotent stop | 5/5 |
+| `tests/bridge-smoke.mjs` | apply cleanup, ping/pong, process exit, idempotent stop, agent status forwarding | 6/6 |
+| `tests/agent-status-smoke.mjs` | availability/results, concurrency, continuous turns, stale instances/events, startup, cleanup | Passed |
+| `tests/agent-status-ui-smoke.py` | 11 queue → Qt transitions, result deadlines, concurrency, legacy/malformed input, ping/shutdown | Passed |
+
+The agent-status contract was checked against the installed runtime on
+2026-11-06. These new checks use mock Host events and an offscreen Qt window;
+they do not constitute a live DSH task verification after plugin reload.
 
 The bridge smoke test spawns a real Python child, so it needs full local access
 on Windows; the plugin Host itself is not under the tool sandbox.
@@ -299,6 +328,13 @@ on Windows; the plugin Host itself is not under the tool sandbox.
   bundle.
 
 ## Next steps
+
+The synchronized development workflow is in
+[`docs/desktop-pet-workflow.md`](./docs/desktop-pet-workflow.md); the immediate
+implementation and live-verification checklist is in
+[`docs/next-phase.md`](./docs/next-phase.md). Activity/result integration and
+automated regression checks are complete; next verify the reloaded plugin in DSH.
+The remaining feature backlog is:
 
 1. Add a Schemastery `Config` schema so the interpreter path and chat settings
    are editable from the settings UI.

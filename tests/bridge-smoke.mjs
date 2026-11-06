@@ -27,6 +27,7 @@ const logger = {
 }
 
 let effectCleanup = null
+const listeners = new Map()
 const ctx = {
   logger,
   effect(execute, label) {
@@ -35,9 +36,9 @@ const ctx = {
     effectCleanup = dispose
     return dispose
   },
-  // apply() also subscribes to session/event to drive the pet state.
-  on() {
-    return () => {}
+  on(name, handler) {
+    listeners.set(name, handler)
+    return () => listeners.delete(name)
   },
 }
 
@@ -83,7 +84,31 @@ function assertCleanLogs(label) {
 // 2. Actual plugin apply(): the registered disposer must stop the process.
 {
   records.length = 0
-  await apply(ctx, options)
+  const sentStates = []
+  const writeMessage = DeskpetBridge.prototype.writeMessage
+  DeskpetBridge.prototype.writeMessage = function (message) {
+    if (message.type === 'pet.state') sentStates.push(message)
+    return writeMessage.call(this, message)
+  }
+  try {
+    await apply(ctx, options)
+    const agent = { id: 'smoke-agent', session: { id: 'smoke-agent' } }
+    listeners.get('agent/status')({ agent, status: 'running' })
+    listeners.get('session/event')(agent.session, { type: 'turn/start', data: { turn: 1 } })
+    listeners.get('session/event')(agent.session, {
+      type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } },
+    })
+    listeners.get('agent/status')({ agent, status: 'idle' })
+    assert.deepEqual(sentStates, [
+      { type: 'pet.state', state: 'idle' },
+      { type: 'pet.state', state: 'thinking' },
+      { type: 'pet.state', state: 'thinking', result: { id: 1, state: 'done' } },
+      { type: 'pet.state', state: 'idle', result: { id: 1, state: 'done' } },
+    ])
+  } finally {
+    DeskpetBridge.prototype.writeMessage = writeMessage
+    await effectCleanup?.()
+  }
   assert.equal(typeof effectCleanup, 'function', 'apply() must register an effect disposer')
 
   const ready = records.find(([level, format]) => level === 'info' && String(format).includes('ready'))
@@ -98,6 +123,7 @@ function assertCleanLogs(label) {
   await effectCleanup()
   await effectCleanup() // Cordis disposers are idempotent; our bridge must be too.
   assertProcessGone(pid)
+  assert.equal(listeners.size, 0, 'agent subscriptions are removed on unload')
   assertCleanLogs('plugin apply')
 }
 
@@ -110,5 +136,6 @@ console.log(JSON.stringify({
     'explicit ping id=2 received pong',
     'Python stderr forwarded without protocol warnings',
     'disposer stopped Python and was idempotent',
+    'apply forwards running -> result -> idle to the real Python pipe',
   ],
 }, null, 2))

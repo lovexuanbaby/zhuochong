@@ -7,6 +7,7 @@ Host → Python:
 - {"type":"ping","id":1,...}        → {"type":"pong","id":1,...}
 - {"type":"shutdown","id":2}        → {"type":"bye","id":2}
 - {"type":"pet.state","state":"thinking"}   切换桌宠气泡/表情
+- {"type":"pet.state","state":"idle","result":{"id":1,"state":"done"}}  活动与结果独立
 - {"type":"chat/history","entries":[...]}    跨重启恢复的对话历史
 - {"type":"chat/memory","count":12}          长期记忆条数（标题栏提示）
 - {"type":"chat/accepted","id":7}           DSH 已接收桌宠输入
@@ -32,7 +33,7 @@ from queue import Queue, Empty
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-from pet_windows import PetWindow
+from pet_windows import PetWindow, RESULT_STATES, STATE_LABELS
 VERSION = "0.1.0"
 
 
@@ -155,19 +156,21 @@ def main() -> int:
                 })
 
             elif message_type == "pet.state":
-                labels = {
-                    "idle": "等待响应中",
-                    "thinking": "正在思考……",
-                    "done": "任务完成",
-                    "error":"任务失败",
-                    "aborted":"任务中断",
-                    "ended":"任务结束（其他原因）",
-                }
-
                 state = message.get("state")
-
-                if isinstance(state, str) and state in labels:
-                    window.set_status(labels[state], state)
+                result = message.get("result")
+                if result is not None and not (
+                    isinstance(result, dict)
+                    and type(result.get("id")) is int
+                    and result["id"] > 0
+                    and isinstance(result.get("state"), str)
+                    and result["state"] in RESULT_STATES
+                ):
+                    log("收到无效的任务结果")
+                    continue
+                if state in ("thinking", "idle"):
+                    window.set_agent_state(state, result)
+                elif isinstance(state, str) and state in STATE_LABELS:
+                    window.set_status(STATE_LABELS[state], state)
                 else:
                     log("收到未知的桌宠状态")
 

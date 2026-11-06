@@ -1008,9 +1008,122 @@ export class DeskpetChat {
 }
 
 /**
- * Cordis Function plugin. The cleanup is registered synchronously so unloading
- * cannot race the asynchronous startup handshake.
+ * Project live agent availability onto the pet after the Python handshake.
  */
+export class DeskpetAgentState {
+  constructor(ctx, bridge, agents) {
+    this.bridge = bridge
+    this.running = new Set()
+    this.agents = new Map()
+    this.retired = new WeakSet()
+    this.turns = new Map()
+    this.result = null
+    this.resultAgent = null
+    this.nextResultId = 1
+    this.active = false
+    this.disposed = false
+    this.lastMessage = null
+    this.disposers = [
+      ctx.on('agent/status', payload => this.track(payload)),
+      ctx.on('agent/created', ({ agent }) => this.track({ agent, status: agent.status })),
+      ctx.on('agent/disposed', ({ agent }) => this.remove(agent)),
+      ctx.on('session/event', (session, event) => this.onSessionEvent(session, event)),
+    ]
+    // Subscribe before taking the snapshot; plugin activation can happen mid-run.
+    for (const agent of agents?.list() ?? []) this.track({ agent, status: agent.status })
+  }
+
+  clearResult() {
+    this.result = null
+    this.resultAgent = null
+  }
+
+  track({ agent, status } = {}) {
+    if (this.disposed || !agent || typeof agent !== 'object' || typeof agent.id !== 'string'
+      || this.retired.has(agent) || (status !== 'running' && status !== 'idle')) return
+    const previous = this.agents.get(agent.id)
+    if (previous && previous !== agent) {
+      this.retired.add(previous)
+      this.running.delete(previous)
+      this.turns.delete(previous)
+      if (this.resultAgent === previous) this.clearResult()
+    }
+    this.agents.set(agent.id, agent)
+    if (status === 'running') {
+      if (!this.running.has(agent)) this.clearResult()
+      this.running.add(agent)
+    } else {
+      this.running.delete(agent)
+    }
+    this.flush()
+  }
+
+  remove(agent) {
+    if (this.disposed || !agent || typeof agent !== 'object') return
+    this.retired.add(agent)
+    this.running.delete(agent)
+    this.turns.delete(agent)
+    if (this.agents.get(agent.id) === agent) this.agents.delete(agent.id)
+    // A completed result may outlive its agent until the UI's display deadline.
+    this.flush()
+  }
+
+  onSessionEvent(session, event) {
+    if (this.disposed || !session || !event
+      || (event.type !== 'turn/start' && event.type !== 'turn/end')) return
+    const agent = this.agents.get(session.id)
+    // Session identity also matters when an id has been reused after replacement.
+    if (!agent || agent.session !== session) return
+    const turn = event.data?.turn
+    if (!Number.isSafeInteger(turn) || turn < 1) return
+    const previous = this.turns.get(agent)
+    if (event.type === 'turn/start') {
+      if (previous && turn <= previous.turn) return
+      this.turns.set(agent, { turn, ended: false })
+      this.clearResult()
+      this.flush()
+      return
+    }
+    if (previous && (turn !== previous.turn || previous.ended)) return
+    // A plugin loaded mid-turn has not observed its start. Accept the live end
+    // only for the exact running agent/session; never replay an idle history.
+    if (!previous && !this.running.has(agent)) return
+    this.turns.set(agent, { turn, ended: true })
+    const states = new Map([['completed', 'done'], ['error', 'error'], ['aborted', 'aborted']])
+    this.result = { id: this.nextResultId++, state: states.get(event.data.reason?.kind) ?? 'ended' }
+    this.resultAgent = agent
+    this.flush()
+  }
+
+  activate() {
+    if (this.disposed) return
+    this.active = true
+    this.flush()
+  }
+
+  flush() {
+    if (!this.active || this.bridge.stopping || this.bridge.exited) return
+    if (this.bridge.child && !this.bridge.child.stdin?.writable) return
+    const state = this.running.size > 0 ? 'thinking' : 'idle'
+    const message = { type: 'pet.state', state, ...(this.result ? { result: this.result } : {}) }
+    const key = JSON.stringify(message)
+    if (key === this.lastMessage) return
+    this.bridge.writeMessage(message)
+    this.lastMessage = key
+  }
+
+  dispose() {
+    this.disposed = true
+    this.active = false
+    for (const dispose of this.disposers.splice(0)) dispose()
+    this.running.clear()
+    this.agents.clear()
+    this.turns.clear()
+    this.clearResult()
+  }
+}
+
+// Register cleanup synchronously so unloading cannot race the startup handshake.
 export async function apply(ctx, config) {
   const options = normalizeConfig(config)
   let chat = null
@@ -1022,56 +1135,11 @@ export async function apply(ctx, config) {
     },
   })
   chat = new DeskpetChat(ctx, bridge, options)
-  // 记录当前关注的会话和轮次
-  let watchedTurn = null;
-
-  // 把 DSH 的结束原因转换成桌宠状态
-  const resultStates = new Map([
-    ["completed", "done"],
-    ["error", "error"],
-    ["aborted", "aborted"],
-  ]);
-
-  function showPetState(state) {
-    if (
-      !bridge.child?.stdin.writable ||
-      bridge.stopping ||
-      bridge.exited
-    ) {
-      return;
-    }
-
-    bridge.writeMessage({ type: "pet.state", state });
-  }
-
-  ctx.on("session/event", (session, event) => {
-    // 一轮任务开始
-    if (event.type === "turn/start") {
-      watchedTurn = {
-        sessionId: session.id,
-        turn: event.data.turn,
-      };
-
-      showPetState("thinking");
-      return;
-    }
-
-    // 只处理当前关注的这一轮结束事件
-    if (
-      event.type !== "turn/end" ||
-      !watchedTurn ||
-      session.id !== watchedTurn.sessionId ||
-      event.data.turn !== watchedTurn.turn
-    ) {
-      return;
-    }
-
-    const reason = event.data.reason?.kind;
-    showPetState(resultStates.get(reason) ?? "ended");
-  });
+  const agentState = new DeskpetAgentState(ctx, bridge, chat.service('agents'))
   ctx.effect(() => {
     bridge.start()
     return () => {
+      agentState.dispose()
       chat.dispose()
       return bridge.stop()
     }
@@ -1079,7 +1147,9 @@ export async function apply(ctx, config) {
 
   try {
     await bridge.ready()
+    agentState.activate()
   } catch (error) {
+    agentState.dispose()
     await bridge.stop()
     throw new Error(`deskpet startup failed: ${error.message}`, { cause: error })
   }

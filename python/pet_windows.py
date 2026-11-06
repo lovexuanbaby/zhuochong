@@ -74,6 +74,16 @@ BUBBLE_STYLES = {
 
 # 这些状态的动画帧率高一些，其余状态降帧省电
 ACTIVE_STATES = {"thinking", "done", "error", "aborted"}
+STATUS_DURATION = 3.8
+STATE_LABELS = {
+    "idle": "空闲中，随时待命",
+    "thinking": "正在思考……",
+    "done": "任务完成",
+    "error": "任务失败",
+    "aborted": "任务已中止",
+    "ended": "任务结束（其他原因）",
+}
+RESULT_STATES = {"done", "error", "aborted", "ended"}
 
 
 def _lerp(a: float, b: float, k: float) -> float:
@@ -551,6 +561,11 @@ class PetWindow(QWidget):
         self._bubble_alpha = 0.0
         self._bubble_target = 0.0
         self._bubble_hide_at = None
+        self._bubble_state = "idle"
+        self._activity_state = "idle"
+        self._agent_result = None
+        self._result_until = None
+        self._last_result_id = 0
 
         # 拖动
         self._drag_offset = None
@@ -574,12 +589,47 @@ class PetWindow(QWidget):
     # ------------------------------------------------------------------ 对外接口
     def set_status(self, text: str, state: str | None = None) -> None:
         """由桥接层调用：更新气泡文字并切换表情动画。"""
+        self._agent_result = None
+        self._result_until = None
         self._state = state if state in BUBBLE_STYLES else "idle"
+        self._activity_state = "thinking" if self._state == "thinking" else "idle"
+        self._bubble_state = self._state
         self._state_t = 0.0
         self._bubble_text = text or ""
         self._bubble_target = 1.0
         # 思考中的气泡一直挂着，其他状态几秒后自动收起来
-        self._bubble_hide_at = None if self._state == "thinking" else self._t + 3.8
+        self._bubble_hide_at = None if self._state == "thinking" else self._t + STATUS_DURATION
+        self._apply_state_flags()
+        self.update()
+
+    def set_agent_state(self, state: str, result: dict | None = None) -> None:
+        """活动状态与结果提示独立；重复 result id 不延长提示或重新播放。"""
+        self._activity_state = state
+        fresh = result is not None and result["id"] > self._last_result_id
+        if fresh:
+            self._last_result_id = result["id"]
+            self._agent_result = result["state"]
+            self._result_until = self._t + STATUS_DURATION
+        elif result is None:
+            self._agent_result = None
+            self._result_until = None
+        self._render_agent_state(restart=fresh)
+
+    def _render_agent_state(self, restart: bool = False) -> None:
+        result = self._agent_result
+        state = "thinking" if self._activity_state == "thinking" else (result or "idle")
+        bubble = result or self._activity_state
+        text = STATE_LABELS[bubble]
+        if state != self._state or (restart and state != "thinking"):
+            self._state = state
+            self._state_t = 0.0
+        if text != self._bubble_text or bubble != self._bubble_state or restart:
+            self._bubble_state = bubble
+            self._bubble_text = text
+            self._bubble_target = 1.0
+            self._bubble_hide_at = (
+                None if result or state == "thinking" else self._t + STATUS_DURATION
+            )
         self._apply_state_flags()
         self.update()
 
@@ -643,6 +693,11 @@ class PetWindow(QWidget):
     def _advance(self, dt: float) -> None:
         self._t += dt
         self._state_t += dt
+
+        if self._result_until is not None and self._t >= self._result_until:
+            self._agent_result = None
+            self._result_until = None
+            self._render_agent_state()
 
         # 气泡淡入淡出
         if self._bubble_hide_at is not None and self._t >= self._bubble_hide_at:
@@ -1041,7 +1096,7 @@ class PetWindow(QWidget):
     # ---------------------------------------------------------------- 气泡
     def _bubble_text_now(self) -> str:
         text = self._bubble_text
-        if self._state == "thinking":
+        if self._bubble_state == "thinking":
             dots = "." * (1 + int(self._state_t * 2.2) % 3)
             text = text.rstrip(". ") + dots
         return text
@@ -1068,7 +1123,7 @@ class PetWindow(QWidget):
         body_h = float(text_rect.height()) + 24.0
         body = QRectF((CANVAS_W - body_w) / 2.0, BUBBLE_BOTTOM - body_h, body_w, body_h)
 
-        border, ink = BUBBLE_STYLES.get(self._state, BUBBLE_STYLES["idle"])
+        border, ink = BUBBLE_STYLES.get(self._bubble_state, BUBBLE_STYLES["idle"])
 
         path = QPainterPath()
         path.addRoundedRect(body, 16.0, 16.0)
