@@ -1,0 +1,3 @@
+# Python desktop UI for the DSH deskpet bridge.
+# Pin the version used by the local test environment.
+PySide6==6.12.0

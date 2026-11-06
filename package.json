@@ -12,7 +12,8 @@
   "files": [
     "index.js",
     "cordis.patch.yml",
-    "python/deskpet_bridge.py",
+    "python/*.py",
+    "requirements.txt",
     "locale/*.json",
     "icon.svg",
     "README.md"

@@ -1,8 +1,10 @@
 # dsh-deskpet
 
-Minimal DSH Host plugin that starts one Python process and talks to it over
-newline-delimited JSON on stdin/stdout. This is the integration layer only: it
-does not call a model, read API keys, or start another Harness.
+A DSH Host plugin for a PySide6 desktop pet. The Host owns one Python child
+process; the two sides exchange newline-delimited JSON over stdin/stdout. The
+pet includes a small chat dialog whose replies use the DSH-configured model.
+Credentials stay owned by DSH: the plugin reads no key files and starts no
+second Harness.
 
 ## Files
 
@@ -11,6 +13,7 @@ does not call a model, read API keys, or start another Harness.
 | [`index.js`](./index.js) | Cordis Host plugin, child-process lifecycle, JSON protocol, logging |
 | [`python/deskpet_bridge.py`](./python/deskpet_bridge.py) | Python test peer: `ping` → `pong`, `shutdown` → `bye`, task-state and chat routing |
 | [`python/pet_windows.py`](./python/pet_windows.py) | Desktop-pet window: frameless always-on-top robot plus the chat dialog |
+| [`requirements.txt`](./requirements.txt) | Pinned Python UI dependency (`PySide6==6.12.0`) |
 | [`python/pet.py`](./python/pet.py) | Legacy stdin/stdout test peer (not spawned by the plugin) |
 | [`cordis.patch.yml`](./cordis.patch.yml) | Bundle patch that inserts the `deskpet` row and configures Python |
 | [`package.json`](./package.json) | Bundle manifest (`dsh.bundle.patch`) and exports |
@@ -30,7 +33,8 @@ Verified against the Desktop runtime that loaded this plugin:
 | Desktop runtime package | `@deepseek-ai/dsh-desktop-runtime` **0.2.1-rc.5** |
 | Host framework | `@deepseek-ai/cordis` **4.0.5** |
 | Node used by the runtime | **24.21.0** |
-| Python for the bridge | **3.12** in a virtualenv with **PySide6 6.12** |
+| Python configured for the bridge | **3.14.6** at `C:\Users\chen1\AppData\Local\Programs\Python\Python314\python.exe` |
+| PySide6 | **6.12.0** |
 
 The specific interfaces used were read from the installed runtime:
 
@@ -145,6 +149,18 @@ the model that the user's DSH installation is already configured with:
 3. text deltas are assembled locally into the reply and sent to Python as
    `chat/reply`.
 
+### Data and privacy
+
+- Chat text is sent to the provider/model configured in DSH. When long-term
+  memory is enabled, the recent transcript is also sent periodically to the
+  same model to distil a user profile.
+- Chat history and the distilled profile are stored locally as plaintext JSON
+  under `$DSH_HOME/deskpet/` by default. They are not encrypted.
+- The pet does not create or write a DSH session, so pet chat is separate from
+  the DSH conversation log. It still uses DSH's configured model credentials.
+- `chatHistoryPath` and `chatMemoryPath` control where the local files live;
+  `chatMemoryEnabled: false` disables profile extraction and injection.
+
 ### Memory (conversation persistence)
 
 The pet is meant to be a companion that remembers, so the conversation is saved
@@ -232,6 +248,14 @@ recompose/restart, or add a higher-priority override in
 The profile override replaces the whole `config` object; omitted fields are
 filled by `normalizeConfig()` defaults.
 
+Install the Python UI dependency into the interpreter named by `pythonPath`:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+`plugin_manager` installs the JS bundle; it does not install Python packages.
+
 ## Current installation state
 
 The bundle is installed as a linked profile dependency and selected as a patch
@@ -251,7 +275,7 @@ hand-edit the profile's `package.json` or `cordis.patch.yml` to install it.
 
 | Test | Coverage | Result |
 |---|---|---|
-| `tests/chat-host-smoke.mjs` | request shape, context, history persistence, long-term memory, failures, timeout, cleanup | 18/18 |
+| `tests/chat-host-smoke.mjs` | request shape, context, history persistence, long-term memory, failures, timeout, cleanup | 20/20 |
 | `tests/chat-ui-smoke.py` | dialog submit/reply/continuation/error, history restore, date dividers, memory hint, Enter regression | 23/23 |
 | `tests/bridge-smoke.mjs` | apply cleanup, ping/pong, process exit, idempotent stop | 5/5 |
 
@@ -270,6 +294,9 @@ on Windows; the plugin Host itself is not under the tool sandbox.
   **已记住 N 件事**, answers questions from it, and keeps it across restarts.
 - Metadata: `package.json`, both locale files and the SVG parse; the bundle
   patch loads through the DSH loader and `plugin_manager`.
+- Packed file list: `package.json` `files` includes `python/*.py` and
+  `requirements.txt`, so the PySide6 window module is not omitted from a packed
+  bundle.
 
 ## Next steps
 
