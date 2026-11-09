@@ -18,6 +18,7 @@ import json
 import os
 import pathlib
 import sys
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -26,7 +27,7 @@ sys.path.insert(0, str(ROOT / "python"))
 
 from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from pet_windows import PetWindow  # noqa: E402
 
@@ -40,6 +41,11 @@ def flush_deferred_deletes(app: QApplication) -> None:
 def main() -> int:
     checks: list[tuple[str, bool]] = []
     app = QApplication([])
+    if os.environ.get("MEMORY_SMOKE_SHOT"):
+        from PySide6.QtGui import QFontDatabase
+        font = pathlib.Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "msyh.ttc"
+        if font.exists():
+            QFontDatabase.addApplicationFont(str(font))
 
     window = PetWindow()
     sent: list[str] = []
@@ -153,6 +159,52 @@ def main() -> int:
     window.set_memory_count(0)
     checks.append(("记忆清零回到模型提示", "DSH 配置的模型" in dialog._hint.text()))
 
+    # 记忆管理：列表可加载，删除入口携带稳定 index；不改变聊天气泡。
+    memory_requests: list[object] = []
+    delete_requests: list[object] = []
+    window.on_memory_list = lambda request_id: memory_requests.append(("list", request_id))
+    window.on_memory_delete = lambda fact_id, revision, request_id: delete_requests.append((fact_id, revision, request_id))
+    before_memory = dialog.messages[:]
+    dialog.open_memory()
+    facts = [
+        {"id": "blue", "kind": "preference", "text": "喜欢青色"},
+        {"id": "timer", "kind": "goal", "text": "想做计时功能"},
+    ]
+    dialog.set_memory_facts(facts, 7, 1)
+    app.processEvents()
+    checks.append(("记忆入口请求列表", memory_requests == [("list", 1)]))
+    checks.append(("记忆列表显示事实", dialog._memory_dialog._list.count() == 2))
+    dialog._memory_dialog._list.setCurrentRow(1)
+    checks.append(("记忆列表保留稳定 id", dialog._memory_dialog._list.currentItem().data(Qt.ItemDataRole.UserRole) == "timer"))
+    checks.append(("打开记忆不改变聊天历史", dialog.messages == before_memory))
+    memory = dialog._memory_dialog
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No):
+        memory._delete.click()
+    checks.append(("取消删除不发送请求", delete_requests == [] and memory._list.count() == 2))
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+        memory._delete.click()
+    checks.append(("确认删除发送稳定标识和版本", delete_requests == [("timer", 7, 2)]))
+    checks.append(("等待保存时保留原条目", memory._list.count() == 2 and memory._timeout.isActive() and not memory._delete.isEnabled()))
+    window.memory_error("保存失败，请刷新重试", 2)
+    checks.append(("保存失败恢复刷新入口", memory._pending_request is None and memory._refresh.isEnabled() and memory._list.count() == 2))
+    memory.refresh()
+    window.set_memory_facts(facts, 7, 3)
+    memory._list.setCurrentRow(1)
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+        memory._delete.click()
+    window.set_memory_facts([facts[0]], 8, 4)
+    checks.append(("成功响应后才移除条目", memory._list.count() == 1 and memory._pending_request is None and dialog.messages == before_memory))
+    memory.refresh()  # request 5
+    memory._timeout.timeout.emit()
+    checks.append(("超时后可以重新刷新", memory._refresh.isEnabled() and memory._pending_request is None))
+    memory.refresh()  # request 6
+    window.set_memory_facts(facts, 7, 5)
+    checks.append(("迟到响应不覆盖新请求", memory._pending_request == 6 and memory._list.count() == 1))
+    window.set_memory_facts([], 9, 6)
+    checks.append(("记忆按钮不抢聊天回车", not dialog._memory_btn.autoDefault() and not dialog._memory_btn.isDefault()))
+    dialog._memory_dialog.set_facts([])
+    checks.append(("空记忆显示空状态", dialog._memory_dialog._empty.isVisible()))
+
     # 截图用：放一段带日期的示例历史
     window.set_chat_history(
         [
@@ -172,6 +224,16 @@ def main() -> int:
         window.set_status("正在思考……", "thinking")
         window.repaint()
         window.grab().save(pet_shot)
+    if os.environ.get("MEMORY_SMOKE_SHOT"):
+        memory.set_facts([
+            facts[0],
+            {"id": "long", "kind": "goal", "text": "希望桌宠可以提醒休息、记录每日目标，并在重启后继续保留这些重要安排。"},
+            {"id": "habit", "kind": "habit", "text": "喜欢在晚上整理当天的学习记录"},
+        ], 10)
+        memory._list.setCurrentRow(1)
+        app.processEvents()
+        assert memory.grab().save(os.environ["MEMORY_SMOKE_SHOT"])
+        assert dialog.grab().save(os.environ["MEMORY_SMOKE_SHOT"] + ".chat.png")
 
     ok = all(passed for _, passed in checks)
     print(

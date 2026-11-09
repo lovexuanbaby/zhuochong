@@ -13,7 +13,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DeskpetChat } from '../index.js'
+import { DeskpetChat, DeskpetBridge } from '../index.js'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const MEMORY_MARKER = '长期记忆整理器'
@@ -455,6 +455,145 @@ await check('无变化停用不重写文件', async () => {
 
   assert.equal(readFileSync(harness.historyPath, 'utf8'), historyText, 'clean history must not be rewritten')
   assert.equal(readFileSync(harness.memoryPath, 'utf8'), memoryText, 'clean memory must not be rewritten')
+})
+
+// 21. Memory management lists and deletes one fact without touching chat history.
+await check('长期记忆查看与删除不影响聊天历史', async () => {
+  const harness = makeHarness()
+  writeFileSync(harness.memoryPath, JSON.stringify({
+    version: 1,
+    facts: [
+      { kind: 'preference', text: '喜欢青色' },
+      { kind: 'goal', text: '想做计时功能' },
+    ],
+  }), 'utf8')
+  const chat = makeChat(harness)
+  chat.entries = [{ role: 'user', text: '保留的聊天', time: '2026-11-07T00:00:00.000Z' }]
+  await chat.loadMemory()
+  harness.sent.length = 0
+  chat.sendMemoryDetails()
+  assert.equal(harness.sent[0].type, 'chat/memory/details')
+  assert.equal(harness.sent[0].revision, 0)
+  assert.deepEqual(harness.sent[0].items.map(({ kind, text }) => ({ kind, text })), [
+    { kind: 'preference', text: '喜欢青色' },
+    { kind: 'goal', text: '想做计时功能' },
+  ])
+  const firstFactId = harness.sent[0].items[0].id
+  await chat.deleteMemory(firstFactId, 0, 9)
+  assert.deepEqual(chat.memoryFacts, [{ kind: 'goal', text: '想做计时功能' }])
+  assert.deepEqual(chat.entries, [{ role: 'user', text: '保留的聊天', time: '2026-11-07T00:00:00.000Z' }])
+  assert.equal(JSON.parse(readFileSync(harness.memoryPath, 'utf8')).facts.length, 1)
+  assert.equal(harness.sent.at(-2).type, 'chat/memory')
+  const afterDelete = harness.sent.at(-1)
+  assert.deepEqual(afterDelete.items.map(({ kind, text }) => ({ kind, text })), [
+    { kind: 'goal', text: '想做计时功能' },
+  ])
+  const remainingId = afterDelete.items[0].id
+  await chat.deleteMemory(remainingId, 0, 10)
+  assert.match(harness.sent.at(-1).message, /列表已更新/, 'old snapshot cannot delete a different current item')
+  await chat.deleteMemory('missing', 1, 10)
+  assert.equal(harness.sent.at(-1).type, 'chat/memory/error')
+  assert.equal(chat.memoryFacts.length, 1)
+  const current = JSON.parse(readFileSync(harness.memoryPath, 'utf8'))
+  assert.deepEqual(current.forgottenFactHashes, [firstFactId], 'deleted content is tombstoned without storing its text')
+  assert.ok(current.forgottenAfter > 0)
+  const restarted = makeChat(harness)
+  await restarted.loadMemory()
+  assert.deepEqual(restarted.memoryFacts, chat.memoryFacts, 'the deletion survives restart')
+  assert.equal(restarted.memoryFacts.some(fact => fact.text === '喜欢青色'), false)
+  const diskBeforeFailure = readFileSync(harness.memoryPath, 'utf8')
+  restarted.persistFileSync = () => false
+  await restarted.deleteMemory(remainingId, restarted.memoryRevision, 11)
+  assert.equal(readFileSync(harness.memoryPath, 'utf8'), diskBeforeFailure, 'save failure leaves disk unchanged')
+  assert.equal(restarted.memoryFacts.length, 1, 'save failure leaves the fact in memory')
+  assert.equal(harness.sent.at(-1).type, 'chat/memory/error')
+  chat.dispose()
+  restarted.dispose()
+})
+
+await check('删除立即生效并丢弃旧整理结果，后续不从旧对话回填', async () => {
+  const harness = makeHarness()
+  const forgottenText = '用户过去说过的兴趣'
+  writeFileSync(harness.memoryPath, JSON.stringify({
+    version: 1,
+    facts: [{ kind: 'fact', text: forgottenText }],
+  }), 'utf8')
+  const chat = makeChat(harness)
+  await chat.loadMemory()
+  chat.sendMemoryDetails(1)
+  const id = harness.sent.at(-1).items[0].id
+  chat.entries = [
+    { role: 'user', text: forgottenText, time: new Date(Date.now() - 10_000).toISOString() },
+    { role: 'assistant', text: `记得${forgottenText}`, time: new Date(Date.now() - 5_000).toISOString() },
+  ]
+
+  let release
+  let started
+  const extracting = new Promise(resolve => { started = resolve })
+  const wait = new Promise(resolve => { release = resolve })
+  const memoryRequests = []
+  harness.llm.stream = async function* (request) {
+    if (!request.system.includes(MEMORY_MARKER)) {
+      yield* textChunks('普通回复')
+      return
+    }
+    memoryRequests.push(request)
+    started()
+    await wait
+    yield* textChunks(JSON.stringify([
+      { kind: 'fact', text: forgottenText },
+      { kind: 'goal', text: '之后希望做提醒' },
+    ]))
+  }
+  const updating = chat.updateMemory()
+  await extracting
+  await chat.deleteMemory(id, chat.memoryRevision, 2)
+  assert.equal(chat.memoryFacts.some(fact => fact.text === forgottenText), false)
+  chat.entries.push({ role: 'user', text: '最近的新目标', time: new Date(Date.now() + 5).toISOString() })
+  release()
+  await updating
+  assert.equal(chat.memoryFacts.some(fact => fact.text === forgottenText), false)
+  assert.equal(chat.memoryFacts.some(fact => fact.text === '之后希望做提醒'), false, 'stale extraction must not replace the user-edited profile')
+  assert.equal(memoryRequests.length, 1)
+  assert.ok(memoryRequests[0].messages[0].content[0].text.includes(forgottenText), 'the in-flight request may have started before deletion')
+  await chat.updateMemory()
+  assert.equal(memoryRequests.length, 2)
+  assert.ok(!memoryRequests[1].messages[0].content[0].text.includes(forgottenText), 'future extraction excludes the pre-deletion transcript')
+  assert.equal(chat.memoryFacts.some(fact => fact.text === forgottenText), false, 'same deleted text from model output is filtered')
+  assert.equal(chat.memoryFacts.some(fact => fact.text === '之后希望做提醒'), true, 'new non-deleted facts are still learned')
+  assert.ok(harness.sent.some(message => message.type === 'chat/memory/details' && message.id === 2))
+  chat.dispose()
+})
+
+await check('并发删除、禁用自动记忆与卸载后的修改保护', async () => {
+  const h = makeHarness()
+  writeFileSync(h.memoryPath, JSON.stringify({version: 1, facts: [
+    {kind: 'fact', text: '条目一'}, {kind: 'fact', text: '条目二'},
+  ]}), 'utf8')
+  const chat = makeChat(h, {chatMemoryEnabled: false})
+  await chat.loadMemory()
+  chat.sendMemoryDetails(1)
+  const snapshot = h.sent.at(-1)
+  assert.equal(snapshot.enabled, false)
+  await Promise.all(snapshot.items.map((fact, i) => chat.deleteMemory(fact.id, snapshot.revision, i + 2)))
+  assert.deepEqual(chat.memoryFacts, [{kind: 'fact', text: '条目二'}])
+  assert.match(h.sent.at(-1).message, /列表已更新/)
+  const saved = readFileSync(h.memoryPath, 'utf8')
+  const queued = chat.deleteMemory(snapshot.items[1].id, chat.memoryRevision, 4)
+  chat.dispose()
+  await queued
+  assert.equal(readFileSync(h.memoryPath, 'utf8'), saved, 'queued mutation cannot write after unload')
+})
+
+await check('桥接路由保留记忆请求 id、事实 id 和版本', async () => {
+  const h = makeHarness()
+  const routed = []
+  const bridge = new DeskpetBridge(h.ctx, {}, {
+    onMemoryList: m => routed.push(m), onMemoryDelete: m => routed.push(m),
+  })
+  const messages = [{type: 'memory/list', id: 3}, {type: 'memory/delete', id: 4, factId: 'stable', revision: 9}]
+  for (const message of messages) bridge.onStdoutLine(JSON.stringify(message))
+  assert.deepEqual(routed, messages)
 })
 
 const failed = results.filter((result) => !result.ok)

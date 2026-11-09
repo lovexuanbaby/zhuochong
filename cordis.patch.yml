@@ -1,11 +1,12 @@
-# Minimal local test bundle for the deskpet Python process.
+# Portable bundle for the deskpet Python process.
 # pythonPath is the interpreter that runs python/deskpet_bridge.py.
 # The script path itself is derived from this plugin's install location.
 - insert:
     - id: deskpet
       name: dsh-deskpet
       config:
-        pythonPath: 'C:\Users\WU\Documents\deepseek-harness\default-workspace\.venvs\deskpet\Scripts\python.exe'
+        # 未指定 pythonPath：依次使用 DSHPET_PYTHON、setup.ps1 创建的独立环境、
+        # PATH 或 Windows 标准安装目录；也可在插件设置中指定解释器。
         pingIntervalMs: 15000
         pingTimeoutMs: 5000
         handshakeTimeoutMs: 5000
@@ -19,14 +20,14 @@
         # 落盘保存并显示在桌宠窗口里的历史上限；重启/重开对话框后恢复。
         chatHistoryMaxMessages: 200
         # 历史文件默认在 $DSH_HOME/deskpet/chat-history.json，可显式覆盖：
-        # chatHistoryPath: 'C:\Users\you\.dsh\deskpet\chat-history.json'
+        # chatHistoryPath: 'D:\DeskpetData\chat-history.json'
         # 长期记忆（越聊越懂你）：每 N 轮聊天提炼一次“用户画像”，之后每次回复都带上。
         chatMemoryEnabled: true
         chatMemoryUpdateEveryTurns: 4
         chatMemoryMaxFacts: 40
         chatMemoryTranscriptMessages: 24
         # 记忆文件默认在 $DSH_HOME/deskpet/user-memory.json，可显式覆盖：
-        # chatMemoryPath: 'C:\Users\you\.dsh\deskpet\user-memory.json'
+        # chatMemoryPath: 'D:\DeskpetData\user-memory.json'
         # 单条回复的 token 上限与等待超时（毫秒）。
         chatMaxTokens: 1024
         chatTimeoutMs: 180000

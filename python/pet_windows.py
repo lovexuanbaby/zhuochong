@@ -38,7 +38,10 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMenu,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -175,6 +178,7 @@ class ChatDialog(QDialog):
         self._messages: list[tuple[str, str]] = []
         self._last_date: str | None = None
         self._memory_count = 0
+        self._memory_dialog: MemoryDialog | None = None
         self._status_base = ""
         self._status_dots = 0
         self._status_timer = QTimer(self)
@@ -211,6 +215,20 @@ class ChatDialog(QDialog):
             f"color: {CHAT_MUTED}; font: 9pt '{UI_FONT}';"
         )
         self._hint = hint
+        memory_btn = QPushButton("记忆", title_bar)
+        memory_btn.setFixedHeight(24)
+        memory_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        memory_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        memory_btn.setAutoDefault(False)
+        memory_btn.setDefault(False)
+        self._memory_btn = memory_btn
+        memory_btn.setStyleSheet(
+            "QPushButton { border: 1px solid rgba(127,182,201,0.45);"
+            f" border-radius: 7px; color: {CHAT_MUTED}; background: transparent;"
+            f" padding: 0 7px; font: 9pt '{UI_FONT}'; }}"
+            "QPushButton:hover { color: #dff7f2; border-color: #4fd3c0; }"
+        )
+        memory_btn.clicked.connect(self.open_memory)
         close_btn = QPushButton("✕", title_bar)
         close_btn.setFixedSize(24, 24)
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -227,9 +245,10 @@ class ChatDialog(QDialog):
         title_layout.addWidget(dot)
         title_layout.addWidget(title)
         title_layout.addStretch(1)
-        title_layout.addWidget(hint)
+        title_layout.addWidget(memory_btn)
         title_layout.addWidget(close_btn)
         outer.addWidget(title_bar)
+        outer.addWidget(hint)
 
         self._scroll = QScrollArea(self)
         self._scroll.setWidgetResizable(True)
@@ -378,6 +397,25 @@ class ChatDialog(QDialog):
             self._hint.setText(f"模型回复 · 已记住 {count} 件事")
         else:
             self._hint.setText("直接用 DSH 配置的模型回复")
+
+    def open_memory(self) -> None:
+        if self._memory_dialog is None:
+            self._memory_dialog = MemoryDialog(self)
+        self._memory_dialog.show_near(self)
+        self._memory_dialog.show()
+        self._memory_dialog.raise_()
+        self._memory_dialog.activateWindow()
+        self._memory_dialog.refresh()
+
+    def set_memory_facts(self, items: object, revision=0, request_id=None, enabled=True) -> None:
+        if self._memory_dialog is None:
+            self._memory_dialog = MemoryDialog(self)
+        self._memory_dialog.set_facts(items, revision, request_id, enabled)
+
+    def memory_error(self, text: str, request_id=None) -> None:
+        if self._memory_dialog is None:
+            self._memory_dialog = MemoryDialog(self)
+        self._memory_dialog.set_error(text, request_id)
 
     def _clear_messages(self) -> None:
         while self._messages_layout.count() > 1:  # 保留末尾弹簧
@@ -533,6 +571,185 @@ class ChatDialog(QDialog):
         self.move(x, y)
 
 
+class MemoryDialog(QDialog):
+    """查看并删除长期记忆；删除只影响画像，不改聊天历史。"""
+
+    def __init__(self, chat: ChatDialog) -> None:
+        super().__init__(chat)
+        self._chat = chat
+        self._items: list[dict] = []
+        self._delete_pending = False
+        self._pending_request = None
+        self._request_sequence = 0
+        self._revision = None
+        self._timeout = QTimer(self)
+        self._timeout.setSingleShot(True)
+        self._timeout.timeout.connect(lambda: self.set_error("请求超时，请刷新确认最新记忆。"))
+        self.setWindowTitle("桌宠记忆")
+        self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFixedSize(420, 420)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 12, 14, 14)
+        outer.setSpacing(8)
+        title_bar = _DragBar(self)
+        title_layout = QHBoxLayout(title_bar)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title = QLabel("桌宠记忆", title_bar)
+        title_layout.addWidget(title)
+        title.setStyleSheet(f"color: {CHAT_TITLE}; font: 600 12pt '{UI_FONT}';")
+        note = QLabel("删除后不再从旧聊天整理记忆。聊天记录仍保留，也可能影响当前回复。", self)
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color: {CHAT_MUTED}; font: 9pt '{UI_FONT}';")
+        self._list = QListWidget(self)
+        self._list.setWordWrap(True)
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._list.setStyleSheet(
+            "QListWidget { background: rgba(11,27,33,0.88); color: #dbeef6; border: 1px solid rgba(127,182,201,0.35); border-radius: 10px; padding: 5px;"
+            f" font: 9pt '{UI_FONT}'; }}"
+            "QListWidget::item { padding: 7px 5px; } QListWidget::item:selected { background: rgba(79,211,192,0.28); }"
+        )
+        self._empty = QLabel("还没有记忆。", self)
+        self._empty.setWordWrap(True)
+        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty.setStyleSheet(f"color: {CHAT_MUTED}; font: 9pt '{UI_FONT}';")
+        self._delete = QPushButton("删除选中记忆", self)
+        self._delete.setEnabled(False)
+        self._delete.clicked.connect(self.delete_selected)
+        close = QPushButton("关闭", self)
+        close.clicked.connect(self.hide)
+        self._refresh = QPushButton("刷新", self)
+        self._refresh.clicked.connect(self.refresh)
+        for button in (self._delete, self._refresh, close):
+            button.setAutoDefault(False)
+            button.setDefault(False)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setStyleSheet(
+                f"QPushButton {{ color: {CHAT_TITLE}; background: #17433f; border: 1px solid #2f8073;"
+                f" border-radius: 7px; padding: 6px 9px; font: 9pt '{UI_FONT}'; }}"
+                "QPushButton:hover { background: #215b53; }"
+                "QPushButton:disabled { color: #668581; background: #172b2c; border-color: #254543; }"
+            )
+        buttons = QHBoxLayout()
+        buttons.addWidget(self._delete)
+        buttons.addStretch(1)
+        buttons.addWidget(self._refresh)
+        buttons.addWidget(close)
+        outer.addWidget(title_bar)
+        outer.addWidget(note)
+        outer.addWidget(self._list, 1)
+        outer.addWidget(self._empty)
+        outer.addLayout(buttons)
+        self._list.itemSelectionChanged.connect(self._update_buttons)
+
+    def _update_buttons(self) -> None:
+        ready = self._pending_request is None
+        self._delete.setEnabled(ready and self._revision is not None and self._list.currentItem() is not None)
+        self._list.setEnabled(ready)
+        self._refresh.setEnabled(ready)
+
+    def _request(self, action: str, fact_id=None, revision=None) -> None:
+        if self._pending_request is not None:
+            return
+        self._request_sequence += 1
+        request_id = self._request_sequence
+        self._pending_request = request_id
+        self._delete_pending = action == "delete"
+        self._empty.setText("正在删除……" if self._delete_pending else "正在读取记忆……")
+        self._empty.show()
+        self._update_buttons()
+        self._timeout.start(15000)
+        try:
+            if action == "delete":
+                callback = self._chat._owner.on_memory_delete
+                if callback is None:
+                    raise RuntimeError("还没有连接到 DSH")
+                callback(fact_id, revision, request_id)
+            else:
+                callback = self._chat._owner.on_memory_list
+                if callback is None:
+                    raise RuntimeError("还没有连接到 DSH")
+                callback(request_id)
+        except Exception as error:  # noqa: BLE001
+            self.set_error(f"记忆操作失败：{error}", request_id)
+
+    def refresh(self) -> None:
+        if self._pending_request is None:
+            self._revision = None
+            self._request("list")
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHints(QPainter.RenderHint.Antialiasing)
+        body = QPainterPath()
+        body.addRoundedRect(QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0), 18.0, 18.0)
+        gradient = QLinearGradient(0.0, 0.0, 0.0, float(self.height()))
+        gradient.setColorAt(0.0, QColor(CHAT_BG_TOP))
+        gradient.setColorAt(1.0, QColor(CHAT_BG_BOTTOM))
+        painter.setPen(QPen(QColor(CHAT_BORDER), 2.0))
+        painter.setBrush(gradient)
+        painter.drawPath(body)
+
+    def show_near(self, anchor: QWidget) -> None:
+        screen = anchor.screen() or QApplication.primaryScreen()
+        if screen is None:
+            self.move(0, 0)
+            return
+        area = screen.availableGeometry()
+        x = anchor.x() + anchor.width() - self.width()
+        y = anchor.y() - self.height() - 8
+        self.move(max(area.left() + 8, min(x, area.right() - self.width() - 8)), max(area.top() + 8, min(y, area.bottom() - self.height() - 8)))
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        _force_topmost(self)
+
+    def set_facts(self, items: object, revision=0, request_id=None, enabled=True) -> None:
+        if request_id is not None and request_id != self._pending_request:
+            return
+        if type(revision) is not int or revision < 0 or not isinstance(items, list):
+            self.set_error("记忆列表格式错误，请刷新", request_id)
+            return
+        self._items = [item for item in items if isinstance(item, dict) and isinstance(item.get("id"), str)
+                       and item["id"] and isinstance(item.get("text"), str) and item["text"].strip()]
+        self._timeout.stop()
+        self._pending_request = None
+        self._revision = revision
+        self._delete_pending = False
+        self._list.clear()
+        kinds = {"preference": "偏好", "habit": "习惯", "goal": "目标", "fact": "事实", "relation": "关系"}
+        for item in self._items:
+            row = QListWidgetItem(f"{kinds.get(item.get('kind'), '事实')} · {item['text'].strip()}")
+            row.setData(Qt.ItemDataRole.UserRole, item["id"])
+            row.setToolTip(item["text"])
+            self._list.addItem(row)
+        self._empty.setText("还没有记忆。" if enabled else "自动记忆已关闭，仍可查看和删除已有条目。")
+        self._empty.setVisible(not self._items or not enabled)
+        self._update_buttons()
+
+    def set_error(self, text: str, request_id=None) -> None:
+        if request_id is not None and request_id != self._pending_request:
+            return
+        self._timeout.stop()
+        self._pending_request = None
+        self._delete_pending = False
+        self._revision = None
+        self._empty.setText(text or "记忆操作失败")
+        self._empty.show()
+        self._update_buttons()
+
+    def delete_selected(self) -> None:
+        item = self._list.currentItem()
+        if item is None or self._pending_request is not None or self._revision is None:
+            return
+        fact_id = item.data(Qt.ItemDataRole.UserRole)
+        revision = self._revision
+        answer = QMessageBox.question(self, "删除记忆", f"确定删除这条长期记忆吗？\n\n{item.text()}\n\n聊天记录会保留；之后仅从新对话整理记忆。", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._request("delete", fact_id, revision)
+
+
 class PetWindow(QWidget):
     def __init__(self) -> None:
         super().__init__()
@@ -577,6 +794,8 @@ class PetWindow(QWidget):
         # 对话窗口（惰性创建）与桥接层回调
         self._chat: ChatDialog | None = None
         self.on_chat_submit = None
+        self.on_memory_list = None
+        self.on_memory_delete = None
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_tick)
@@ -673,6 +892,12 @@ class PetWindow(QWidget):
         except (TypeError, ValueError):
             value = 0
         self._ensure_chat().set_memory_count(value)
+
+    def set_memory_facts(self, items: object, revision=0, request_id=None, enabled=True) -> None:
+        self._ensure_chat().set_memory_facts(items, revision, request_id, enabled)
+
+    def memory_error(self, text: object, request_id=None) -> None:
+        self._ensure_chat().memory_error(str(text or "记忆操作失败"), request_id)
 
     def chat_reply(self, text: str, ok: bool = True) -> None:
         """显示模型回复（或错误）。"""

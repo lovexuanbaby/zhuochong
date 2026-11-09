@@ -10,6 +10,7 @@ Host → Python:
 - {"type":"pet.state","state":"idle","result":{"id":1,"state":"done"}}  活动与结果独立
 - {"type":"chat/history","entries":[...]}    跨重启恢复的对话历史
 - {"type":"chat/memory","count":12}          长期记忆条数（标题栏提示）
+- {"type":"chat/memory/details","id":1,"revision":0,"items":[{"id":"...","kind":"preference","text":"..."}]}  记忆管理
 - {"type":"chat/accepted","id":7}           DSH 已接收桌宠输入
 - {"type":"chat/reply","id":7,"text":"...","reason":"completed"}  回复收尾
 - {"type":"chat/error","id":7,"message":"..."}                    发送失败
@@ -34,7 +35,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from pet_windows import PetWindow, RESULT_STATES, STATE_LABELS
-VERSION = "0.1.0"
+VERSION = "0.2.0-rc.1"
 
 
 def log(message: str) -> None:
@@ -122,6 +123,10 @@ def main() -> int:
         log(f"chat #{chat_id} → host ({len(chat_text)} chars)")
 
     window.on_chat_submit = send_chat
+    window.on_memory_list = lambda request_id: send({"type": "memory/list", "id": request_id})
+    window.on_memory_delete = lambda fact_id, revision, request_id: send({
+        "type": "memory/delete", "id": request_id, "factId": fact_id, "revision": revision,
+    })
 
     inbox = Queue()
     stop_event = threading.Event()
@@ -184,6 +189,13 @@ def main() -> int:
                 count = message.get("count")
                 window.set_memory_count(count)
                 log(f"long-term memory: {count} facts")
+
+            elif message_type == "chat/memory/details":
+                window.set_memory_facts(message.get("items"), message.get("revision"), message.get("id"), message.get("enabled", True))
+
+            elif message_type == "chat/memory/error":
+                window.memory_error(message.get("message") or "记忆操作失败", message.get("id"))
+                log(f"long-term memory error: {message.get('message')}")
 
             elif message_type == "chat/accepted":
                 pending_chats.discard(message_id)

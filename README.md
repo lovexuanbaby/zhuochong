@@ -6,14 +6,20 @@ pet includes a small chat dialog whose replies use the DSH-configured model.
 Credentials stay owned by DSH: the plugin reads no key files and starts no
 second Harness.
 
+The current local installation candidate is **0.2.0-rc.1**. See
+[`docs/INSTALL.md`](./docs/INSTALL.md) for setup, diagnostics, settings, and data
+handling. Release artifacts are produced by `npm run release:check`.
+
 ## Files
 
 | Path | Purpose |
 |---|---|
 | [`index.js`](./index.js) | Cordis Host plugin, child-process lifecycle, JSON protocol, logging |
+| [`config.js`](./config.js), [`python-runtime.js`](./python-runtime.js) | Real Schemastery settings schema and portable interpreter discovery |
+| [`scripts/setup.ps1`](./scripts/setup.ps1), [`scripts/doctor.ps1`](./scripts/doctor.ps1) | Isolated Python environment installation and read-only diagnosis |
 | [`python/deskpet_bridge.py`](./python/deskpet_bridge.py) | Python test peer: `ping` → `pong`, `shutdown` → `bye`, task-state and chat routing |
 | [`python/pet_windows.py`](./python/pet_windows.py) | Desktop-pet window: frameless always-on-top robot plus the chat dialog |
-| [`requirements.txt`](./requirements.txt) | Pinned Python UI dependency (`PySide6==6.12.0`) |
+| [`requirements.txt`](./requirements.txt) | Pinned UI dependency (`PySide6-Essentials==6.12.0`) |
 | [`python/pet.py`](./python/pet.py) | Legacy stdin/stdout test peer (not spawned by the plugin) |
 | [`cordis.patch.yml`](./cordis.patch.yml) | Bundle patch that inserts the `deskpet` row and configures Python |
 | [`package.json`](./package.json) | Bundle manifest (`dsh.bundle.patch`) and exports |
@@ -33,7 +39,7 @@ Verified against the Desktop runtime that loaded this plugin:
 | Desktop runtime package | `@deepseek-ai/dsh-desktop-runtime` **0.2.1-rc.5** |
 | Host framework | `@deepseek-ai/cordis` **4.0.5** |
 | Node used by the runtime | **24.21.0** |
-| Python configured for the bridge | **3.14.6** at `C:\Users\chen1\AppData\Local\Programs\Python\Python314\python.exe` |
+| Python used in local verification | **3.14.6**, including a fresh isolated environment |
 | PySide6 | **6.12.0** |
 
 The specific interfaces used were read from the installed runtime:
@@ -55,9 +61,10 @@ The specific interfaces used were read from the installed runtime:
 - **Session boundary:** chat and memory live in the plugin's own files; no DSH
   session is created or written.
 
-Configuration is validated in `normalizeConfig()` in [`index.js`](./index.js).
-The plugin exports no Schemastery `Config` schema, so the settings UI shows no
-editable fields for it; the bundle patch carries the values instead.
+Configuration is exposed through the real Schemastery `Config` from
+[`config.js`](./config.js), pinned to the installed Host's version 3.18.5.
+The native Cordis `resolveConfig()` contract is verified; runtime normalization
+also validates paired model overrides and resolves a blank Python path.
 
 ## Protocol
 
@@ -113,6 +120,8 @@ do not change startup or shutdown:
 {"type":"chat/error","id":7,"message":"模型调用失败的原因"}
 {"type":"chat/history","entries":[{"role":"user","text":"…","time":"2026-11-05T09:00:00+08:00"}]}
 {"type":"chat/memory","count":12,"updatedAt":"2026-11-05T09:00:00+08:00"}
+{"type":"chat/memory/details","id":1,"revision":0,"enabled":true,"items":[{"id":"…","kind":"preference","text":"喜欢青色"}]}
+{"type":"chat/memory/error","id":1,"message":"记忆保存失败，原条目已保留"}
 ```
 
 `pet.state` follows live `agent/status` events (`{ agent, status }`):
@@ -227,11 +236,27 @@ None of this touches a DSH session either: `chat-history.json` and
 
 ## Configuration
 
+The chat dialog's **记忆** button opens a refreshable list. Deletion uses a
+stable fact id and snapshot revision, asks for confirmation, and updates the UI
+only after atomic persistence succeeds. An expired list must be refreshed.
+Requests time out after 15 seconds and can be retried by refreshing.
+
+Deleting a fact preserves chat history, stops re-distilling earlier user turns,
+and filters the normalized text hash of the removed fact. New paraphrases may
+still be learned from later conversations; this is not erasure of chat history
+or provider-side data. Storage remains version 1 with additive `forgottenAfter`
+and `forgottenFactHashes` fields. Older plugin versions do not enforce these
+deletion rules; back up data before downgrading.
+
+Python → Host uses `memory/list` with request `id`, and `memory/delete` with
+`id`, `factId`, and `revision`. Host replies with `chat/memory/details`
+(`id`, `revision`, `enabled`, `items`) or `chat/memory/error` (`id`, `message`).
+
 The active values are in [`cordis.patch.yml`](./cordis.patch.yml):
 
 | Field | Default | Meaning |
 |---|---|---|
-| `pythonPath` | `DSHPET_PYTHON`, else `python` | Interpreter path or command name |
+| `pythonPath` | blank: automatic discovery | Explicit path → DSHPET_PYTHON → managed environment → PATH → standard Windows installation |
 | `pingIntervalMs` | `15000` | Heartbeat interval |
 | `pingTimeoutMs` | `5000` | Per-ping timeout |
 | `handshakeTimeoutMs` | `5000` | Spawn plus startup-pong timeout |
@@ -298,15 +323,23 @@ hand-edit the profile's `package.json` or `cordis.patch.yml` to install it.
 
 | Test | Coverage | Result |
 |---|---|---|
-| `tests/chat-host-smoke.mjs` | request shape, context, history persistence, long-term memory, failures, timeout, cleanup | 20/20 |
-| `tests/chat-ui-smoke.py` | dialog submit/reply/continuation/error, history restore, date dividers, memory hint, Enter regression | 23/23 |
-| `tests/bridge-smoke.mjs` | apply cleanup, ping/pong, process exit, idempotent stop, agent status forwarding | 6/6 |
+| `tests/config-smoke.mjs` | native schema shape, defaults, invalid inputs, interpreter selection | 10/10 |
+| `tests/chat-host-smoke.mjs` | request shape, context, history persistence, long-term memory, stable-ID memory management, stale-write protection, failures, timeout, cleanup | 24/24 |
+| `tests/chat-ui-smoke.py` | dialog submit/reply/continuation/error, history restore, date dividers, memory view/delete confirmation, save failure, timeout and stale response handling | 36/36 |
+| `tests/bridge-smoke.mjs` | apply cleanup, ping/pong, process exit, idempotent stop, state forwarding, EOF and timeout termination | 8/8 |
 | `tests/agent-status-smoke.mjs` | availability/results, concurrency, continuous turns, stale instances/events, startup, cleanup | Passed |
 | `tests/agent-status-ui-smoke.py` | 11 queue → Qt transitions, result deadlines, concurrency, legacy/malformed input, ping/shutdown | Passed |
 
 The agent-status contract was checked against the installed runtime on
 2026-11-06. These new checks use mock Host events and an offscreen Qt window;
 they do not constitute a live DSH task verification after plugin reload.
+Separate live verification on November 6–7, 2026 has now confirmed plugin
+normal completion, cancellation, recovery, concurrent agents, idle unload/reload,
+reload during an active task,
+and history/memory-hint restoration. User-observed pet transitions were
+cross-checked against real `turn/end` events and process counts where applicable; see
+[`docs/live-status-validation.md`](./docs/live-status-validation.md) for evidence
+and the remaining scenarios.
 
 The bridge smoke test spawns a real Python child, so it needs full local access
 on Windows; the plugin Host itself is not under the tool sandbox.
@@ -332,14 +365,14 @@ on Windows; the plugin Host itself is not under the tool sandbox.
 The synchronized development workflow is in
 [`docs/desktop-pet-workflow.md`](./docs/desktop-pet-workflow.md); the immediate
 implementation and live-verification checklist is in
-[`docs/next-phase.md`](./docs/next-phase.md). Activity/result integration and
-automated regression checks are complete; next verify the reloaded plugin in DSH.
-The remaining feature backlog is:
+[`docs/next-phase.md`](./docs/next-phase.md). Activity/result integration,
+memory management, and automated regressions are complete. Core live checks have
+passed; remaining DSH scenarios are tracked separately in the validation record.
+Config settings, portable Python discovery, isolated environment setup and
+candidate-package checks are implemented. The user confirmed acceptance testing
+passed on November 9, 2026 and authorized the `0.2.0-rc.1` prerelease.
+Timers/reminders and a bundled Python executable remain future
+features, not blockers for the documented Python-environment delivery option.
 
-1. Add a Schemastery `Config` schema so the interpreter path and chat settings
-   are editable from the settings UI.
-2. Add a memory-management entry (view or delete a remembered fact) to the
-   dialog.
-3. Build the timing features the pet is meant to be known for (timers,
-   reminders) on top of the same line protocol.
-4. Extend the protocol with typed events for richer Host interactions.
+See [`docs/RELEASE-STATUS.md`](./docs/RELEASE-STATUS.md) in the source checkout
+for the completed checks and user acceptance record.

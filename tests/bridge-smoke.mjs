@@ -7,15 +7,21 @@
  *   node tests/bridge-smoke.mjs "C:\path\to\python.exe"
  */
 import assert from 'node:assert/strict'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { apply, DeskpetBridge } from '../index.js'
 
 const pythonPath = process.argv[2] ?? process.env.DSHPET_TEST_PYTHON ?? 'python'
+const data = mkdtempSync(join(tmpdir(), 'deskpet-bridge-'))
 const options = {
   pythonPath,
   pingIntervalMs: 60_000,
   pingTimeoutMs: 3_000,
   handshakeTimeoutMs: 5_000,
   shutdownTimeoutMs: 3_000,
+  chatHistoryPath: join(data, 'history.json'),
+  chatMemoryPath: join(data, 'memory.json'),
 }
 
 const records = []
@@ -127,6 +133,42 @@ function assertCleanLogs(label) {
   assertCleanLogs('plugin apply')
 }
 
+// Closing stdin without a shutdown message must still release the Qt process.
+{
+  records.length = 0
+  const bridge = new DeskpetBridge(ctx, options)
+  bridge.start()
+  const ready = await bridge.ready()
+  try {
+    bridge.child.stdin.end()
+    assert.equal(await bridge.waitForExit(3_000), true, 'EOF must close Python')
+    assertProcessGone(ready.pid)
+  } finally { await bridge.stop() }
+}
+
+// Simulate an unresponsive peer by withholding both the shutdown line and EOF.
+{
+  records.length = 0
+  const bridge = new DeskpetBridge(ctx, {...options, shutdownTimeoutMs: 100})
+  bridge.start()
+  const ready = await bridge.ready()
+  const stdin = bridge.child.stdin
+  const originalWrite = stdin.write, originalEnd = stdin.end
+  stdin.write = () => true
+  stdin.end = () => stdin
+  try {
+    await bridge.stop()
+    assert.equal(bridge.exited, true, 'timeout fallback must terminate Python')
+    assertProcessGone(ready.pid)
+  } finally {
+    stdin.write = originalWrite
+    stdin.end = originalEnd
+    // Release this test-owned peer if the fallback under test did not succeed.
+    if (!stdin.destroyed) stdin.end()
+    await bridge.waitForExit(3_000)
+  }
+}
+
 console.log(JSON.stringify({
   ok: true,
   pythonPath,
@@ -137,5 +179,7 @@ console.log(JSON.stringify({
     'Python stderr forwarded without protocol warnings',
     'disposer stopped Python and was idempotent',
     'apply forwards running -> result -> idle to the real Python pipe',
+    'stdin EOF releases Python without a shutdown request',
+    'unresponsive peer is terminated after the shutdown timeout',
   ],
 }, null, 2))

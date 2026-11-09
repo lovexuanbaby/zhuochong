@@ -6,17 +6,18 @@
  * for protocol messages so a stray print cannot corrupt the stream.
  */
 import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { resolvePythonPath } from './python-runtime.js'
+export { Config } from './config.js'
 
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const SCRIPT_PATH = join(PLUGIN_DIR, 'python', 'deskpet_bridge.py')
-const PYTHON_PATH_ENV = 'DSHPET_PYTHON'
 const CHAT_HISTORY_VERSION = 1
 const MEMORY_VERSION = 1
 const MEMORY_KINDS = new Set(['preference', 'habit', 'goal', 'fact', 'relation'])
@@ -35,22 +36,23 @@ function defaultMemoryPath() {
 
 function positiveInteger(value, fallback, field, min = 1) {
   if (value === undefined || value === null) return fallback
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < min) {
-    throw new TypeError(`deskpet config: ${field} must be a finite number >= ${min}`)
+  if (!Number.isSafeInteger(value) || value < min || value > 2_147_483_647) {
+    throw new TypeError(`deskpet config: ${field} must be an integer between ${min} and 2147483647`)
   }
   return Math.floor(value)
 }
 
-function normalizeConfig(raw) {
-  const config = raw ?? {}
+export function normalizeConfig(raw) {
+  let config = raw ?? {}
   if (typeof config !== 'object' || Array.isArray(config)) {
     throw new TypeError('deskpet config: expected an object')
   }
 
-  const pythonPath = config.pythonPath ?? process.env[PYTHON_PATH_ENV] ?? 'python'
-  if (typeof pythonPath !== 'string' || pythonPath.trim() === '') {
-    throw new TypeError('deskpet config: pythonPath must be a non-empty string')
+  config = { ...config }
+  for (const field of ['chatProvider', 'chatModel', 'chatSystemPrompt', 'chatHistoryPath', 'chatMemoryPath']) {
+    if (typeof config[field] === 'string' && config[field].trim() === '') delete config[field]
   }
+  const pythonPath = resolvePythonPath(config.pythonPath)
 
   const chatProvider = config.chatProvider
   const chatModel = config.chatModel
@@ -320,6 +322,20 @@ export class DeskpetBridge {
           message: '主机端聊天路由不可用',
         })
         return
+      case 'memory/list':
+        if (typeof this.handlers.onMemoryList === 'function') {
+          this.handlers.onMemoryList(message)
+          return
+        }
+        this.writeMessage({ type: 'chat/memory/error', id: message.id, message: '主机端记忆路由不可用' })
+        return
+      case 'memory/delete':
+        if (typeof this.handlers.onMemoryDelete === 'function') {
+          this.handlers.onMemoryDelete(message)
+          return
+        }
+        this.writeMessage({ type: 'chat/memory/error', id: message.id, message: '主机端记忆路由不可用' })
+        return
       default:
         this.ctx.logger.info('Python deskpet sent %s: %o', message.type ?? '(no type)', message)
     }
@@ -559,6 +575,10 @@ function parseMemoryFacts(text, maxFacts) {
   return facts
 }
 
+function memoryFactId(fact) {
+  return createHash('sha256').update(fact.text.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase()).digest('hex')
+}
+
 export class DeskpetChat {
   constructor(ctx, bridge, options) {
     this.ctx = ctx
@@ -574,6 +594,11 @@ export class DeskpetChat {
     this.memoryTurns = 0
     this.memoryJob = null
     this.memoryAbort = null
+    this.memoryRevision = 0
+    this.memoryLoad = null
+    this.memoryChanges = Promise.resolve()
+    this.forgottenFactHashes = new Set()
+    this.forgottenAfter = 0
     this.loaded = false
     this.memoryLoaded = false
     this.historyDirty = false
@@ -683,7 +708,11 @@ export class DeskpetChat {
   // ---------------------------------------------------------------- 长期记忆
 
   async loadMemory() {
-    this.memoryLoaded = true
+    this.memoryLoad ??= this.readMemory().finally(() => { this.memoryLoaded = true })
+    return this.memoryLoad
+  }
+
+  async readMemory() {
     this.memoryDirty = false
     let raw
     try {
@@ -698,6 +727,10 @@ export class DeskpetChat {
     }
     try {
       const parsed = JSON.parse(raw)
+      this.forgottenAfter = Number.isSafeInteger(parsed?.forgottenAfter) && parsed.forgottenAfter >= 0
+        ? parsed.forgottenAfter : 0
+      this.forgottenFactHashes = new Set((Array.isArray(parsed?.forgottenFactHashes) ? parsed.forgottenFactHashes : [])
+        .filter(value => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value)))
       const facts = Array.isArray(parsed?.facts) ? parsed.facts : []
       this.memoryFacts = facts
         .filter((fact) => fact !== null && typeof fact === 'object'
@@ -706,6 +739,7 @@ export class DeskpetChat {
           kind: MEMORY_KINDS.has(fact.kind) ? fact.kind : 'fact',
           text: fact.text.trim(),
         }))
+        .filter(fact => !this.forgottenFactHashes.has(memoryFactId(fact)))
         .slice(-this.options.chatMemoryMaxFacts)
     } catch (error) {
       this.ctx.logger.warn('deskpet memory is not valid JSON: %s', error?.message ?? String(error))
@@ -719,24 +753,43 @@ export class DeskpetChat {
     )
   }
 
-  memoryContent() {
+  memoryContent(facts = this.memoryFacts, hashes = this.forgottenFactHashes, after = this.forgottenAfter) {
     return JSON.stringify({
       version: MEMORY_VERSION,
       updatedAt: new Date().toISOString(),
-      facts: this.memoryFacts,
+      facts,
+      forgottenAfter: after,
+      forgottenFactHashes: [...hashes],
     }, null, 2)
   }
 
   async persistMemory() {
-    const saved = await this.persistFile(this.memoryPath, this.memoryContent(), 'memory')
-    if (saved) this.memoryDirty = false
-    return saved
+    return this.queueMemoryChange(() => !this.disposed && this.persistMemorySync())
   }
 
   persistMemorySync() {
     const saved = this.persistFileSync(this.memoryPath, this.memoryContent(), 'memory')
     if (saved) this.memoryDirty = false
     return saved
+  }
+
+  queueMemoryChange(change) {
+    const task = this.memoryChanges.then(change)
+    this.memoryChanges = task.catch(() => {})
+    return task
+  }
+
+  // A small bounded profile is saved synchronously inside the mutation queue:
+  // rename finishes before publishing state, so unload cannot race an old write.
+  commitMemory(facts, hashes = this.forgottenFactHashes, after = this.forgottenAfter) {
+    if (this.disposed) return false
+    if (!this.persistFileSync(this.memoryPath, this.memoryContent(facts, hashes, after), 'memory')) return false
+    this.memoryFacts = facts
+    this.forgottenFactHashes = hashes
+    this.forgottenAfter = after
+    this.memoryRevision += 1
+    this.memoryDirty = false
+    return true
   }
 
   async persistFile(path, content, label) {
@@ -774,6 +827,54 @@ export class DeskpetChat {
     })
   }
 
+  memoryError(id, message) {
+    this.write({ type: 'chat/memory/error', id, message })
+  }
+
+  sendMemoryDetails(id) {
+    if (this.disposed || !this.memoryLoaded) {
+      this.memoryError(id, this.disposed ? '桌宠桥接已停止' : '记忆正在加载，请稍后刷新')
+      return
+    }
+    this.write({
+      type: 'chat/memory/details',
+      ...(id === undefined ? {} : { id }),
+      revision: this.memoryRevision,
+      enabled: this.options.chatMemoryEnabled,
+      items: this.memoryFacts.map((fact) => ({
+        id: memoryFactId(fact),
+        kind: fact.kind,
+        text: fact.text,
+      })),
+    })
+  }
+
+  async deleteMemory(factId, revision, requestId) {
+    return this.queueMemoryChange(() => {
+      if (this.disposed || !this.memoryLoaded) {
+        this.memoryError(requestId, '记忆尚不可用，请稍后刷新')
+        return
+      }
+      if (!Number.isSafeInteger(revision) || revision !== this.memoryRevision) {
+        this.memoryError(requestId, '记忆列表已更新，请刷新后重新选择')
+        return
+      }
+      if (typeof factId !== 'string' || !this.memoryFacts.some(fact => memoryFactId(fact) === factId)) {
+        this.memoryError(requestId, '要删除的记忆不存在，请刷新列表')
+        return
+      }
+      const remaining = this.memoryFacts.filter(fact => memoryFactId(fact) !== factId)
+      const forgotten = new Set([...this.forgottenFactHashes, factId])
+      if (!this.commitMemory(remaining, forgotten, Math.max(Date.now(), this.forgottenAfter))) {
+        this.memoryError(requestId, '记忆保存失败，原条目已保留；请重试')
+        return
+      }
+      this.memoryTurns = 0
+      this.sendMemoryToPet()
+      this.sendMemoryDetails(requestId)
+    })
+  }
+
   /** 注入到每次回复的系统提示里。 */
   composeSystemPrompt() {
     const base = this.options.chatSystemPrompt
@@ -804,13 +905,20 @@ export class DeskpetChat {
     const selection = this.modelSelection()
     const llm = this.service('llm')
     if (selection === null || typeof llm?.stream !== 'function') return
-    const transcript = this.entries
+    // After a deletion, never re-distil pre-deletion user turns (including
+    // a reply to an old user message that finishes after deletion).
+    let includeTurn = this.forgottenAfter === 0
+    const transcript = this.entries.filter(entry => {
+      if (entry.role === 'user') includeTurn = this.forgottenAfter === 0 || Date.parse(entry.time) > this.forgottenAfter
+      return includeTurn
+    })
       .slice(-this.options.chatMemoryTranscriptMessages)
       .map((entry) => `${entry.role === 'user' ? '用户' : '桌宠'}：${entry.text}`)
       .join('\n')
     if (transcript === '') return
 
     const abort = new AbortController()
+    const revision = this.memoryRevision
     this.memoryAbort = abort
     const assembler = createTextAssembler()
     try {
@@ -826,14 +934,18 @@ export class DeskpetChat {
         abort.signal.throwIfAborted()
         assembler.push(chunk)
       }
+      abort.signal.throwIfAborted()
+      if (assembler.finish.kind === 'error' || assembler.finish.kind === 'aborted') throw new Error('记忆整理未正常完成')
       const facts = parseMemoryFacts(assembler.text(), this.options.chatMemoryMaxFacts)
       if (facts === null) throw new Error('记忆整理结果不是合法 JSON 数组')
-      this.memoryFacts = facts
-      this.memoryDirty = true
-      this.memoryTurns = 0
-      await this.persistMemory()
-      this.sendMemoryToPet()
-      this.ctx.logger.info('deskpet memory updated: %d facts', this.memoryFacts.length)
+      await this.queueMemoryChange(() => {
+        if (this.disposed || revision !== this.memoryRevision) return
+        const retained = facts.filter(fact => !this.forgottenFactHashes.has(memoryFactId(fact)))
+        if (!this.commitMemory(retained)) throw new Error('记忆保存失败，保留旧画像')
+        this.memoryTurns = 0
+        this.sendMemoryToPet()
+        this.ctx.logger.info('deskpet memory updated: %d facts', this.memoryFacts.length)
+      })
     } catch (error) {
       this.memoryTurns = 0
       this.ctx.logger.warn('deskpet memory update failed: %s', error?.message ?? String(error))
@@ -1133,6 +1245,15 @@ export async function apply(ctx, config) {
         ctx.logger.warn('deskpet chat handling failed: %s', error?.message ?? String(error))
       })
     },
+    onMemoryList: (message) => {
+      chat?.sendMemoryDetails(message.id)
+    },
+    onMemoryDelete: (message) => {
+      chat?.deleteMemory(message.factId, message.revision, message.id).catch((error) => {
+        ctx.logger.warn('deskpet memory deletion failed: %s', error?.message ?? String(error))
+        chat?.memoryError(message.id, '记忆操作失败，请刷新后重试')
+      })
+    },
   })
   chat = new DeskpetChat(ctx, bridge, options)
   const agentState = new DeskpetAgentState(ctx, bridge, chat.service('agents'))
@@ -1151,7 +1272,7 @@ export async function apply(ctx, config) {
   } catch (error) {
     agentState.dispose()
     await bridge.stop()
-    throw new Error(`deskpet startup failed: ${error.message}`, { cause: error })
+    throw new Error(`deskpet startup failed: ${error.message}. 请运行插件 scripts/setup.ps1 安装独立 Python 环境，或在插件设置中指定已安装 PySide6 的 Python；详细原因见 [python] 日志。`, { cause: error })
   }
 
   // 恢复跨重启的聊天记忆：先读落盘历史与长期记忆，再让 Python 对话框渲染。

@@ -1,3 +1,5 @@
 # Python desktop UI for the DSH deskpet bridge.
 # Pin the version used by the local test environment.
-PySide6==6.12.0
+# QtCore, QtGui, QtWidgets and QtTest are all in Essentials.
+# Avoid downloading the unused Addons, WebEngine and Pdf distributions.
+PySide6-Essentials==6.12.0
