@@ -11,6 +11,7 @@ Host → Python:
 - {"type":"chat/history","entries":[...]}    跨重启恢复的对话历史
 - {"type":"chat/memory","count":12}          长期记忆条数（标题栏提示）
 - {"type":"chat/memory/details","id":1,"revision":0,"items":[{"id":"...","kind":"preference","text":"..."}]}  记忆管理
+- {"type":"chat/timer","event":"fired","kind":"countdown","text":"计时结束：5 分钟"}  计时/提醒到点
 - {"type":"chat/accepted","id":7}           DSH 已接收桌宠输入
 - {"type":"chat/reply","id":7,"text":"...","reason":"completed"}  回复收尾
 - {"type":"chat/error","id":7,"message":"..."}                    发送失败
@@ -196,6 +197,14 @@ def main() -> int:
             elif message_type == "chat/memory/error":
                 window.memory_error(message.get("message") or "记忆操作失败", message.get("id"))
                 log(f"long-term memory error: {message.get('message')}")
+
+            elif message_type == "chat/timer":
+                if message.get("event") == "fired":
+                    window.show_timer_reminder(
+                        message.get("text") or "时间到了",
+                        message.get("kind") or "countdown",
+                    )
+                    log(f"timer fired: {message.get('text')}")
 
             elif message_type == "chat/accepted":
                 pending_chats.discard(message_id)

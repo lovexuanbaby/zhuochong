@@ -2,9 +2,9 @@
   "tool": "deskpet-selfimprove-evaluate",
   "version": 1,
   "mode": "deterministic-mock-llm",
-  "startedAt": "2026-11-13T16:28:04.616Z",
-  "scenarios": 14,
-  "passed": 14,
+  "startedAt": "2026-11-13T16:42:24.879Z",
+  "scenarios": 25,
+  "passed": 25,
   "failed": 0,
   "score": 100,
   "checks": [
@@ -27,14 +27,14 @@
       "title": "解析代码块包裹的 JSON",
       "weight": 1,
       "ok": true,
-      "durationMs": 3
+      "durationMs": 2
     },
     {
       "id": "parse-prose",
       "title": "解析前后带说明文字的 JSON",
       "weight": 1,
       "ok": true,
-      "durationMs": 4
+      "durationMs": 3
     },
     {
       "id": "parse-invalid-keeps-old",
@@ -48,7 +48,7 @@
       "title": "去重并遵守条数上限",
       "weight": 1,
       "ok": true,
-      "durationMs": 3
+      "durationMs": 2
     },
     {
       "id": "kind-normalize",
@@ -69,7 +69,7 @@
       "title": "删除记忆需要匹配 revision",
       "weight": 2,
       "ok": true,
-      "durationMs": 8
+      "durationMs": 10
     },
     {
       "id": "prompt-injection",
@@ -97,14 +97,91 @@
       "title": "记忆文本不得包含换行/控制字符（防提示注入）",
       "weight": 2,
       "ok": true,
-      "durationMs": 2
+      "durationMs": 3
     },
     {
       "id": "forgotten-guard-prompt",
       "title": "整理提示词提醒不要恢复已删除记忆",
       "weight": 2,
       "ok": true,
+      "durationMs": 4
+    },
+    {
+      "id": "timer-create-countdown",
+      "title": "创建倒计时并立刻回复（不调用模型）",
+      "weight": 2,
+      "ok": true,
+      "durationMs": 3
+    },
+    {
+      "id": "timer-create-reminder",
+      "title": "创建提醒并带上提醒内容",
+      "weight": 2,
+      "ok": true,
+      "durationMs": 3
+    },
+    {
+      "id": "timer-fire-countdown",
+      "title": "倒计时到点触发并清理",
+      "weight": 2,
+      "ok": true,
+      "durationMs": 11
+    },
+    {
+      "id": "timer-fire-reminder",
+      "title": "提醒到点触发提醒内容",
+      "weight": 2,
+      "ok": true,
+      "durationMs": 3
+    },
+    {
+      "id": "timer-concurrent",
+      "title": "并发计时互不干扰",
+      "weight": 2,
+      "ok": true,
       "durationMs": 5
+    },
+    {
+      "id": "timer-list-cancel",
+      "title": "查看、取消单个与取消全部",
+      "weight": 2,
+      "ok": true,
+      "durationMs": 5
+    },
+    {
+      "id": "timer-invalid",
+      "title": "非法时长/不存在的计时给出友好回复",
+      "weight": 1,
+      "ok": true,
+      "durationMs": 1
+    },
+    {
+      "id": "timer-persist-restart",
+      "title": "计时落盘并在重启后恢复",
+      "weight": 2,
+      "ok": true,
+      "durationMs": 9
+    },
+    {
+      "id": "timer-overdue-catchup",
+      "title": "过期计时重启后只补触发一次",
+      "weight": 2,
+      "ok": true,
+      "durationMs": 16
+    },
+    {
+      "id": "timer-corrupt-quarantine",
+      "title": "损坏的计时文件被隔离",
+      "weight": 1,
+      "ok": true,
+      "durationMs": 3
+    },
+    {
+      "id": "timer-max-active",
+      "title": "并发计时数量有上限",
+      "weight": 1,
+      "ok": true,
+      "durationMs": 3
     }
   ]
 }

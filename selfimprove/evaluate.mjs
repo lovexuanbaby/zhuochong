@@ -13,7 +13,13 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { scenarios } from './scenarios/memory.mjs'
+import { scenarios as memoryScenarios } from './scenarios/memory.mjs'
+import { timerScenarios } from './scenarios/timer.mjs'
+
+const scenarios = [
+  ...memoryScenarios.map((scenario) => ({ ...scenario, group: 'memory' })),
+  ...timerScenarios.map((scenario) => ({ ...scenario, group: 'timer' })),
+]
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPORT_DIR = join(HERE, 'reports')

@@ -34,6 +34,12 @@ function defaultMemoryPath() {
   return join(home, 'deskpet', 'user-memory.json')
 }
 
+/** 桌宠计时/提醒的默认落盘位置。 */
+function defaultTimersPath() {
+  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  return join(home, 'deskpet', 'timers.json')
+}
+
 function positiveInteger(value, fallback, field, min = 1) {
   if (value === undefined || value === null) return fallback
   if (!Number.isSafeInteger(value) || value < min || value > 2_147_483_647) {
@@ -49,7 +55,7 @@ export function normalizeConfig(raw) {
   }
 
   config = { ...config }
-  for (const field of ['chatProvider', 'chatModel', 'chatSystemPrompt', 'chatHistoryPath', 'chatMemoryPath']) {
+  for (const field of ['chatProvider', 'chatModel', 'chatSystemPrompt', 'chatHistoryPath', 'chatMemoryPath', 'chatTimerPath']) {
     if (typeof config[field] === 'string' && config[field].trim() === '') delete config[field]
   }
   const pythonPath = resolvePythonPath(config.pythonPath)
@@ -88,6 +94,17 @@ export function normalizeConfig(raw) {
     throw new TypeError('deskpet config: chatMemoryEnabled must be a boolean when set')
   }
 
+  const chatTimerPath = config.chatTimerPath
+  if (chatTimerPath !== undefined
+    && (typeof chatTimerPath !== 'string' || chatTimerPath.trim() === '')) {
+    throw new TypeError('deskpet config: chatTimerPath must be a non-empty string when set')
+  }
+
+  const chatTimerEnabled = config.chatTimerEnabled
+  if (chatTimerEnabled !== undefined && typeof chatTimerEnabled !== 'boolean') {
+    throw new TypeError('deskpet config: chatTimerEnabled must be a boolean when set')
+  }
+
   return {
     pythonPath: pythonPath.trim(),
     pingIntervalMs: positiveInteger(config.pingIntervalMs, 15_000, 'pingIntervalMs', 1_000),
@@ -112,6 +129,10 @@ export function normalizeConfig(raw) {
     chatMemoryUpdateEveryTurns: positiveInteger(config.chatMemoryUpdateEveryTurns, 4, 'chatMemoryUpdateEveryTurns', 1),
     chatMemoryMaxFacts: positiveInteger(config.chatMemoryMaxFacts, 40, 'chatMemoryMaxFacts', 1),
     chatMemoryTranscriptMessages: positiveInteger(config.chatMemoryTranscriptMessages, 24, 'chatMemoryTranscriptMessages', 2),
+    // 计时/提醒：聊天里直接说“计时 5 分钟”“10 分钟后提醒我 喝水”即可。
+    chatTimerEnabled: chatTimerEnabled ?? true,
+    chatTimerMaxActive: positiveInteger(config.chatTimerMaxActive, 20, 'chatTimerMaxActive', 1),
+    chatTimerPath: typeof chatTimerPath === 'string' ? chatTimerPath.trim() : undefined,
     chatTimeoutMs: positiveInteger(config.chatTimeoutMs, 180_000, 'chatTimeoutMs', 1_000),
   }
 }
@@ -597,6 +618,66 @@ function memoryFactId(fact) {
   return createHash('sha256').update(sanitizeFactText(fact.text).toLowerCase()).digest('hex')
 }
 
+// ---------------------------------------------------------------- 计时/提醒
+
+const TIMER_VERSION = 1
+const TIMER_UNITS = [
+  ['钟头', 3_600_000], ['小时', 3_600_000], ['h', 3_600_000],
+  ['分钟', 60_000], ['分', 60_000], ['min', 60_000], ['m', 60_000],
+  ['秒钟', 1_000], ['秒', 1_000], ['s', 1_000],
+]
+const TIMER_ACTION_PREFIX = /^(?:倒计时|计时|提醒我|查看计时|计时列表|提醒列表|取消)/u
+
+function durationToMs(count, unit) {
+  const label = String(unit).toLowerCase()
+  const entry = TIMER_UNITS.find(([name]) => name.toLowerCase() === label)
+  if (entry === undefined) return null
+  const value = Number(count) * entry[1]
+  if (!Number.isFinite(value) || value <= 0 || value > 2_147_483_647) return null
+  return Math.round(value)
+}
+
+function formatDuration(ms) {
+  if (ms >= 3_600_000) return `${Math.round(ms / 3_600_000 * 10) / 10} 小时`
+  if (ms >= 60_000) return `${Math.round(ms / 60_000 * 10) / 10} 分钟`
+  return `${Math.round(ms / 1_000)} 秒`
+}
+
+function formatRemaining(ms) {
+  const seconds = Math.max(0, Math.ceil(ms / 1_000))
+  if (seconds >= 3_600) {
+    const hours = Math.floor(seconds / 3_600)
+    const minutes = Math.floor((seconds % 3_600) / 60)
+    return `${hours}小时${minutes}分`
+  }
+  if (seconds >= 60) {
+    const minutes = Math.floor(seconds / 60)
+    const rest = seconds % 60
+    return `${minutes}分${rest}秒`
+  }
+  return `${seconds}秒`
+}
+
+function timerFireText(timer) {
+  if (timer.kind === 'reminder') return timer.label ? `提醒：${timer.label}` : '时间到了'
+  return `计时结束：${formatDuration(timer.durationMs ?? (timer.dueAt - timer.createdAt))}`
+}
+
+function normalizeTimer(raw) {
+  if (raw === null || typeof raw !== 'object') return null
+  const id = raw.id
+  const dueAt = raw.dueAt
+  const createdAt = Number.isSafeInteger(raw.createdAt) ? raw.createdAt : 0
+  if (!Number.isSafeInteger(id) || id <= 0) return null
+  if (raw.kind !== 'countdown' && raw.kind !== 'reminder') return null
+  if (!Number.isSafeInteger(dueAt) || dueAt <= 0) return null
+  const label = typeof raw.label === 'string' ? sanitizeFactText(raw.label) : ''
+  const durationMs = Number.isSafeInteger(raw.durationMs) && raw.durationMs > 0
+    ? raw.durationMs
+    : Math.max(0, dueAt - createdAt)
+  return { id, kind: raw.kind, label, dueAt, createdAt, durationMs }
+}
+
 export class DeskpetChat {
   constructor(ctx, bridge, options) {
     this.ctx = ctx
@@ -621,6 +702,14 @@ export class DeskpetChat {
     this.memoryLoaded = false
     this.historyDirty = false
     this.memoryDirty = false
+    // 计时/提醒：[{ id, kind, label, dueAt, createdAt, durationMs }]
+    this.timers = []
+    this.timerPath = options.chatTimerPath ?? defaultTimersPath()
+    this.timerLoad = null
+    this.timerLoaded = false
+    this.timerSeq = 0
+    this.timerTickHandle = null
+    this.now = typeof options.now === 'function' ? options.now : () => Date.now()
     this.pending = null
     this.disposed = false
   }
@@ -977,10 +1066,188 @@ export class DeskpetChat {
     }
   }
 
+  // ---------------------------------------------------------------- 计时/提醒
+
+  async loadTimers() {
+    this.timerLoad ??= this.readTimers().finally(() => { this.timerLoaded = true })
+    return this.timerLoad
+  }
+
+  async readTimers() {
+    let raw
+    try {
+      raw = await readFile(this.timerPath, 'utf8')
+    } catch (error) {
+      this.timers = []
+      this.timerSeq = 0
+      if (error?.code !== 'ENOENT') {
+        this.ctx.logger.warn('deskpet timers load failed: %s', error?.message ?? String(error))
+        await this.quarantineFile(this.timerPath)
+      }
+      return
+    }
+    try {
+      const parsed = JSON.parse(raw)
+      const list = Array.isArray(parsed?.timers) ? parsed.timers : []
+      this.timers = list.map(normalizeTimer).filter(timer => timer !== null)
+      const seq = Number.isSafeInteger(parsed?.seq) && parsed.seq > 0 ? parsed.seq : 0
+      this.timerSeq = Math.max(seq, ...this.timers.map(timer => timer.id), 0)
+    } catch (error) {
+      this.ctx.logger.warn('deskpet timers is not valid JSON: %s', error?.message ?? String(error))
+      this.timers = []
+      this.timerSeq = 0
+      await this.quarantineFile(this.timerPath)
+    }
+    this.ctx.logger.info('deskpet timers loaded: %d', this.timers.length)
+  }
+
+  timerContent() {
+    return JSON.stringify({
+      version: TIMER_VERSION,
+      updatedAt: new Date().toISOString(),
+      seq: this.timerSeq,
+      timers: this.timers,
+    }, null, 2)
+  }
+
+  persistTimersSync() {
+    this.persistFileSync(this.timerPath, this.timerContent(), 'timers')
+  }
+
+  parseTimerCommand(text) {
+    const value = (text || '').trim()
+    if (value === '') return null
+    if (/^(?:查看计时|计时列表|提醒列表)$/u.test(value)) return { action: 'list' }
+    if (/^取消所有计时$/u.test(value)) return { action: 'cancel-all' }
+    let match = value.match(/^取消(?:计时)?\s*#?(\d+)$/u)
+    if (match) return { action: 'cancel', id: Number(match[1]) }
+    match = value.match(/^(?:倒计时|计时)\s*(\d+)\s*(秒钟|秒|分钟|分|小时|钟头|min|m|s|h)\s*$/iu)
+    if (match) {
+      const durationMs = durationToMs(match[1], match[2])
+      if (durationMs !== null) {
+        return { action: 'create', kind: 'countdown', durationMs, label: '' }
+      }
+    }
+    match = value.match(/^(?:提醒我\s*)?(\d+)\s*(秒钟|秒|分钟|分|小时|钟头|min|m|s|h)\s*后\s*(?:提醒我|提醒)?\s*(.*)$/iu)
+    if (match) {
+      const durationMs = durationToMs(match[1], match[2])
+      if (durationMs !== null) {
+        return { action: 'create', kind: 'reminder', durationMs, label: (match[3] ?? '').trim() }
+      }
+    }
+    if (TIMER_ACTION_PREFIX.test(value)) return { action: 'invalid' }
+    return null
+  }
+
+  timerListReply() {
+    if (this.timers.length === 0) return '现在没有进行中的计时。'
+    const lines = [...this.timers]
+      .sort((left, right) => left.dueAt - right.dueAt || left.id - right.id)
+      .map((timer) => {
+        const remaining = formatRemaining(timer.dueAt - this.now())
+        if (timer.kind === 'countdown') return `#${timer.id} 计时 ${remaining}后结束`
+        return `#${timer.id} 提醒 ${remaining}后${timer.label ? `：${timer.label}` : ''}`
+      })
+    return lines.join('\n')
+  }
+
+  executeTimerCommand(command) {
+    if (command.action === 'list') return this.timerListReply()
+    if (command.action === 'invalid') {
+      return '计时命令没看懂：时长要写成「数字 + 秒/分钟/小时」，比如「计时 5 分钟」或「10 分钟后提醒我 喝水」。'
+    }
+    if (command.action === 'cancel-all') {
+      if (this.timers.length === 0) return '现在没有进行中的计时。'
+      const count = this.timers.length
+      this.timers = []
+      this.persistTimersSync()
+      return `已取消全部 ${count} 个计时。`
+    }
+    if (command.action === 'cancel') {
+      const target = this.timers.find(timer => timer.id === command.id)
+      if (target === undefined) return `没有找到计时 #${command.id}，可用「查看计时」确认。`
+      this.timers = this.timers.filter(timer => timer.id !== command.id)
+      this.persistTimersSync()
+      return `已取消计时 #${command.id}。`
+    }
+    if (command.action === 'create') {
+      const limit = this.options.chatTimerMaxActive
+      if (this.timers.length >= limit) {
+        return `现在最多同时进行 ${limit} 个计时，先取消一个再来吧。`
+      }
+      const id = ++this.timerSeq
+      const createdAt = this.now()
+      const timer = {
+        id,
+        kind: command.kind,
+        label: command.label,
+        dueAt: createdAt + command.durationMs,
+        createdAt,
+        durationMs: command.durationMs,
+      }
+      this.timers.push(timer)
+      this.persistTimersSync()
+      const duration = formatDuration(command.durationMs)
+      if (command.kind === 'countdown') {
+        return `好，开始计时 ${duration}（#${id}）。到点我会提醒你。`
+      }
+      return command.label === ''
+        ? `好，${duration} 后提醒你（#${id}）。`
+        : `好，${duration} 后提醒你：${command.label}（#${id}）。`
+    }
+    return '计时命令没看懂。'
+  }
+
+  /** 触发所有到点的计时；返回本次触发的数量。 */
+  tickTimers() {
+    if (this.disposed || !this.options.chatTimerEnabled || !this.timerLoaded) return 0
+    const now = this.now()
+    const due = this.timers
+      .filter(timer => timer.dueAt <= now)
+      .sort((left, right) => left.dueAt - right.dueAt || left.id - right.id)
+    if (due.length === 0) return 0
+    const dueIds = new Set(due.map(timer => timer.id))
+    this.timers = this.timers.filter(timer => !dueIds.has(timer.id))
+    this.persistTimersSync()
+    for (const timer of due) {
+      this.write({
+        type: 'chat/timer',
+        event: 'fired',
+        id: timer.id,
+        kind: timer.kind,
+        label: timer.label,
+        text: timerFireText(timer),
+        dueAt: timer.dueAt,
+      })
+    }
+    return due.length
+  }
+
+  startTimerTicker() {
+    if (this.timerTickHandle !== null || this.disposed || !this.options.chatTimerEnabled) return
+    const tick = () => {
+      try {
+        this.tickTimers()
+      } catch (error) {
+        this.ctx.logger.warn('deskpet timer tick failed: %s', error?.message ?? String(error))
+      }
+    }
+    tick()
+    this.timerTickHandle = setInterval(tick, 1_000)
+    this.timerTickHandle.unref?.()
+  }
+
+  stopTimerTicker() {
+    if (this.timerTickHandle === null) return
+    clearInterval(this.timerTickHandle)
+    this.timerTickHandle = null
+  }
+
   // ---------------------------------------------------------------- 对话
 
   dispose() {
     this.disposed = true
+    this.stopTimerTicker()
     this.memoryAbort?.abort(new Error('deskpet chat disposed'))
     // 只在确实加载过、且本轮之后没有写成功时才落盘：
     // 插件在启动握手/加载阶段被停用时，不能用空内存覆盖用户已有文件；
@@ -1080,6 +1347,16 @@ export class DeskpetChat {
     if (text === '') {
       this.fail(chatId, '消息不能为空')
       return
+    }
+    if (this.options.chatTimerEnabled) {
+      const command = this.parseTimerCommand(text)
+      if (command !== null) {
+        await this.loadTimers()
+        const reply = this.executeTimerCommand(command)
+        this.write({ type: 'chat/accepted', id: chatId })
+        this.write({ type: 'chat/reply', id: chatId, text: reply, reason: 'completed' })
+        return
+      }
     }
     const selection = this.modelSelection()
     if (selection === null) {
@@ -1303,4 +1580,7 @@ export async function apply(ctx, config) {
   await chat.loadMemory()
   chat.sendMemoryToPet()
   chat.sendHistoryToPet()
+  // 恢复计时/提醒并启动 1 秒一次的 ticker（过期计时会补触发一次）。
+  await chat.loadTimers()
+  chat.startTimerTicker()
 }

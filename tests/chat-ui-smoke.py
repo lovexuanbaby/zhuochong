@@ -159,6 +159,10 @@ def main() -> int:
     window.set_memory_count(0)
     checks.append(("记忆清零回到模型提示", "DSH 配置的模型" in dialog._hint.text()))
 
+    # 计时/提醒到点：桌宠气泡与对话框都要出现提醒。
+    window.show_timer_reminder("提醒：喝水")
+    checks.append(("计时提醒显示在对话窗", dialog.messages[-1] == ("pet", "⏰ 提醒：喝水")))
+
     # 记忆管理：列表可加载，删除入口携带稳定 index；不改变聊天气泡。
     memory_requests: list[object] = []
     delete_requests: list[object] = []

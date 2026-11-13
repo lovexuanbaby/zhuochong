@@ -899,6 +899,13 @@ class PetWindow(QWidget):
     def memory_error(self, text: object, request_id=None) -> None:
         self._ensure_chat().memory_error(str(text or "记忆操作失败"), request_id)
 
+    def show_timer_reminder(self, text: object, kind: str = "countdown") -> None:
+        """计时/提醒到点：桌宠气泡 + 对话框消息。"""
+        label = str(text or "时间到了")
+        self.set_status(f"⏰ {label}", "done")
+        if self._chat is not None:
+            self._chat.append_notice(f"⏰ {label}", "pet")
+
     def chat_reply(self, text: str, ok: bool = True) -> None:
         """显示模型回复（或错误）。"""
         self._ensure_chat().finish(text, ok=ok)

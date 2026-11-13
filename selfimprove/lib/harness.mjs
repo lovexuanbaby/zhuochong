@@ -94,17 +94,20 @@ export const BASE_OPTIONS = {
   chatMemoryUpdateEveryTurns: 2,
   chatMemoryMaxFacts: 40,
   chatMemoryTranscriptMessages: 24,
+  chatTimerEnabled: true,
+  chatTimerMaxActive: 20,
+  chatTimerPath: undefined,
   chatTimeoutMs: 5_000,
-  chatMemoryUpdateEveryTurnsOverride: undefined,
 }
 
-/** 新建一个独立临时环境（历史/记忆文件都在临时目录，互不影响）。 */
+/** 新建一个独立临时环境（历史/记忆/计时文件都在临时目录，互不影响）。 */
 export function createEnv({ harness: harnessOptions = {}, chat: chatOptions = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'deskpet-si-'))
   const harness = makeHarness(harnessOptions)
   const pathOptions = {
     chatHistoryPath: join(dir, 'chat-history.json'),
     chatMemoryPath: join(dir, 'user-memory.json'),
+    chatTimerPath: join(dir, 'timers.json'),
   }
   const chat = new DeskpetChat(harness.ctx, harness.bridge, {
     ...BASE_OPTIONS,
@@ -117,7 +120,21 @@ export function createEnv({ harness: harnessOptions = {}, chat: chatOptions = {}
     chat,
     historyPath: pathOptions.chatHistoryPath,
     memoryPath: pathOptions.chatMemoryPath,
+    timerPath: pathOptions.chatTimerPath,
   }
+}
+
+/** 创建带假时钟的计时环境；clock.advance(ms) 推进时间。 */
+export function createTimerEnv({ harness: harnessOptions = {}, chat: chatOptions = {} } = {}) {
+  const clock = {
+    now: 1_700_000_000_000,
+    advance(ms) { this.now += ms },
+  }
+  const env = createEnv({
+    harness: harnessOptions,
+    chat: { ...chatOptions, now: () => clock.now },
+  })
+  return { ...env, clock }
 }
 
 /** 与插件内部一致的记忆 id 归一化（用于预置 forgottenFactHashes）。 */

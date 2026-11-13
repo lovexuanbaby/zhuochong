@@ -23,4 +23,7 @@ export const Config = Schema.object({
   chatMemoryMaxFacts: integer(40).description('最多保留的长期记忆条数'),
   chatMemoryTranscriptMessages: integer(24, 2).description('整理记忆时使用的最近消息数'),
   chatMemoryPath: Schema.string().description('可选：长期记忆文件路径；留空使用 DSH 数据目录。'),
+  chatTimerEnabled: Schema.boolean().default(true).description('启用聊天中的计时/提醒命令（如“计时 5 分钟”“10 分钟后提醒我 喝水”）。'),
+  chatTimerMaxActive: integer(20).description('最多同时进行的计时/提醒数量'),
+  chatTimerPath: Schema.string().description('可选：计时/提醒文件路径；留空使用 DSH 数据目录。'),
 })
