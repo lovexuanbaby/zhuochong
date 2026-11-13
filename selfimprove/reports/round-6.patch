@@ -1,0 +1,351 @@
+diff --git a/config.js b/config.js
+index 8bb6540..48658aa 100644
+--- a/config.js
++++ b/config.js
+@@ -30,4 +30,8 @@ export const Config = Schema.object({
+   chatProactiveEnabled: Schema.boolean().default(true).description('低打扰主动关心：深夜轻声提醒、很久没说话时问候（每天最多一次）。'),
+   chatCompanionPath: Schema.string().description('可选：陪伴关系数据文件路径；留空使用 DSH 数据目录。'),
+   chatEmotionEnabled: Schema.boolean().default(true).description('启用情绪状态层：记录心情/精力并影响回复与气泡。'),
++  chatEventsEnabled: Schema.boolean().default(true).description('启用事件记忆：记住具体发生过的事并按相关度召回。'),
++  chatEventUpdateEveryTurns: integer(4).description('每多少轮聊天整理一次事件记忆'),
++  chatEventMaxEvents: integer(50).description('最多保留的事件记忆条数'),
++  chatEventPath: Schema.string().description('可选：事件记忆文件路径；留空使用 DSH 数据目录。'),
+ })
+diff --git a/index.js b/index.js
+index 378777e..cf7b3a3 100644
+--- a/index.js
++++ b/index.js
+@@ -79,6 +79,70 @@ function clamp(value, minimum, maximum, fallback = 0) {
+   return Math.min(maximum, Math.max(minimum, value))
+ }
+ 
++// ---------------------------------------------------------------- 事件记忆
++
++const EVENT_VERSION = 1
++const EVENT_RECALL_LIMIT = 3
++
++function eventExtractionPrompt(existingEvents, maxEvents) {
++  const existing = existingEvents.length === 0
++    ? '（暂无）'
++    : existingEvents.map((event) => `- ${event.summary}${event.when ? `（${event.when}）` : ''}`).join('\n')
++  return [
++    '你是桌宠的事件记忆整理器：从最近对话里提取值得长期记住的“具体事件”，形成一份事件记忆列表。',
++    '规则：',
++    '1. 只记录具体发生的事：时间、场景、人物、情绪、结果、承诺（例如“答应帮他提醒”）。',
++    '2. 泛泛的偏好不属于事件，不要重复画像里的内容；合并重复或相近事件；不确定的不要写；不要编造。',
++    `3. 每条 summary 不超过 60 个字；when 可选（如“2026-11-12 晚上”）；importance 为 1-5；总数不超过 ${maxEvents} 条。`,
++    '4. 只输出 JSON 数组，元素形如 {"summary":"...","when":"...","importance":3}；不要输出其他文字。',
++    '',
++    '已有事件：',
++    existing,
++  ].join('\n')
++}
++
++function parseEvents(text, maxEvents, now) {
++  if (typeof text !== 'string') return null
++  const start = text.indexOf('[')
++  const end = text.lastIndexOf(']')
++  if (start < 0 || end <= start) return null
++  let parsed
++  try {
++    parsed = JSON.parse(text.slice(start, end + 1))
++  } catch {
++    return null
++  }
++  if (!Array.isArray(parsed)) return null
++  const events = []
++  const seen = new Set()
++  for (const item of parsed) {
++    if (item === null || typeof item !== 'object') continue
++    const summary = typeof item.summary === 'string' ? sanitizeFactText(item.summary) : ''
++    if (summary === '' || summary.length > 80) continue
++    const key = summary.toLowerCase()
++    if (seen.has(key)) continue
++    seen.add(key)
++    const importance = Math.min(5, Math.max(1, Math.round(Number.isFinite(item.importance) ? item.importance : 3)))
++    const when = typeof item.when === 'string' ? sanitizeFactText(item.when).slice(0, 40) : ''
++    events.push({ id: eventIdOf(summary), summary, when, importance, createdAt: now })
++    if (events.length >= maxEvents) break
++  }
++  return events
++}
++
++function eventIdOf(summary) {
++  return createHash('sha256').update(String(summary).toLowerCase()).digest('hex')
++}
++
++function bigramSet(text) {
++  const cleaned = String(text).toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '')
++  const grams = new Set()
++  for (let index = 0; index < cleaned.length - 1; index += 1) {
++    grams.add(cleaned.slice(index, index + 2))
++  }
++  return grams
++}
++
+ /** 桌宠对话历史的默认落盘位置（DSH home 下，避免写进仓库）。 */
+ function defaultChatHistoryPath() {
+   const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+@@ -103,6 +167,12 @@ function defaultCompanionPath() {
+   return join(home, 'deskpet', 'companion.json')
+ }
+ 
++/** 事件记忆的默认落盘位置。 */
++function defaultEventsPath() {
++  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
++  return join(home, 'deskpet', 'events.json')
++}
++
+ function positiveInteger(value, fallback, field, min = 1) {
+   if (value === undefined || value === null) return fallback
+   if (!Number.isSafeInteger(value) || value < min || value > 2_147_483_647) {
+@@ -189,6 +259,17 @@ export function normalizeConfig(raw) {
+     throw new TypeError('deskpet config: chatEmotionEnabled must be a boolean when set')
+   }
+ 
++  const chatEventPath = config.chatEventPath
++  if (chatEventPath !== undefined
++    && (typeof chatEventPath !== 'string' || chatEventPath.trim() === '')) {
++    throw new TypeError('deskpet config: chatEventPath must be a non-empty string when set')
++  }
++
++  const chatEventsEnabled = config.chatEventsEnabled
++  if (chatEventsEnabled !== undefined && typeof chatEventsEnabled !== 'boolean') {
++    throw new TypeError('deskpet config: chatEventsEnabled must be a boolean when set')
++  }
++
+   return {
+     pythonPath: pythonPath.trim(),
+     pingIntervalMs: positiveInteger(config.pingIntervalMs, 15_000, 'pingIntervalMs', 1_000),
+@@ -223,6 +304,11 @@ export function normalizeConfig(raw) {
+     chatCompanionPath: typeof chatCompanionPath === 'string' ? chatCompanionPath.trim() : undefined,
+     // 情绪状态层：心情/精力随对话变化并自然衰减。
+     chatEmotionEnabled: chatEmotionEnabled ?? true,
++    // 事件记忆：记住具体发生过的事，按相关度召回。
++    chatEventsEnabled: chatEventsEnabled ?? true,
++    chatEventUpdateEveryTurns: positiveInteger(config.chatEventUpdateEveryTurns, 4, 'chatEventUpdateEveryTurns', 1),
++    chatEventMaxEvents: positiveInteger(config.chatEventMaxEvents, 50, 'chatEventMaxEvents', 1),
++    chatEventPath: typeof chatEventPath === 'string' ? chatEventPath.trim() : undefined,
+     chatTimeoutMs: positiveInteger(config.chatTimeoutMs, 180_000, 'chatTimeoutMs', 1_000),
+   }
+ }
+@@ -815,6 +901,15 @@ export class DeskpetChat {
+     this.companionLoaded = false
+     this.proactiveHandle = null
+     this.moodHint = null
++    // 事件记忆：[{ id, summary, when, importance, createdAt }]
++    this.events = []
++    this.eventPath = options.chatEventPath ?? defaultEventsPath()
++    this.eventLoad = null
++    this.eventLoaded = false
++    this.eventTurns = 0
++    this.eventJob = null
++    this.eventAbort = null
++    this.recalledEvents = []
+     this.pending = null
+     this.disposed = false
+   }
+@@ -1098,6 +1193,13 @@ export class DeskpetChat {
+         ...this.memoryFacts.map((fact) => `- ${fact.text}`),
+       )
+     }
++    if (this.options.chatEventsEnabled && this.recalledEvents.length > 0) {
++      sections.push(
++        '',
++        '# 你们之前聊过的一些事（按相关度选取，自然引用，不要逐条复述）',
++        ...this.recalledEvents.map((event) => `- ${event.summary}${event.when ? `（${event.when}）` : ''}`),
++      )
++    }
+     const days = this.companionDays()
+     if (this.companionLoaded && days >= 2) {
+       sections.push('', '# 关系', `你们已经认识 ${days} 天，聊过 ${this.companion.turns} 轮。`)
+@@ -1113,15 +1215,27 @@ export class DeskpetChat {
+     return sections.join('\n')
+   }
+ 
+-  /** 每完成一轮对话计数；达到阈值就异步整理一次长期记忆。 */
++  /** 每完成一轮对话计数；达到阈值就异步整理长期记忆与事件记忆。 */
+   noteSuccessfulTurn() {
+-    if (!this.options.chatMemoryEnabled || this.disposed) return
+-    this.memoryTurns += 1
+-    if (this.memoryTurns < this.options.chatMemoryUpdateEveryTurns) return
+-    if (this.memoryJob !== null) return
+-    this.memoryJob = this.updateMemory().finally(() => {
+-      this.memoryJob = null
+-    })
++    if (this.disposed) return
++    if (this.options.chatMemoryEnabled) {
++      this.memoryTurns += 1
++      if (this.memoryTurns >= this.options.chatMemoryUpdateEveryTurns
++        && this.memoryJob === null) {
++        this.memoryJob = this.updateMemory().finally(() => {
++          this.memoryJob = null
++        })
++      }
++    }
++    if (this.options.chatEventsEnabled) {
++      this.eventTurns += 1
++      if (this.eventTurns >= this.options.chatEventUpdateEveryTurns
++        && this.eventJob === null) {
++        this.eventJob = this.updateEvents().finally(() => {
++          this.eventJob = null
++        })
++      }
++    }
+   }
+ 
+   /** 用同一模型的轻量调用把最近聊天提炼成用户画像。 */
+@@ -1505,6 +1619,129 @@ export class DeskpetChat {
+     return `你现在心情${mood}，${energy}。${recentText}`
+   }
+ 
++  // ---------------------------------------------------------------- 事件记忆
++
++  async loadEvents() {
++    this.eventLoad ??= this.readEvents().finally(() => { this.eventLoaded = true })
++    return this.eventLoad
++  }
++
++  async readEvents() {
++    let raw
++    try {
++      raw = await readFile(this.eventPath, 'utf8')
++    } catch (error) {
++      this.events = []
++      if (error?.code !== 'ENOENT') {
++        this.ctx.logger.warn('deskpet events load failed: %s', error?.message ?? String(error))
++        await this.quarantineFile(this.eventPath)
++      }
++      return
++    }
++    try {
++      const parsed = JSON.parse(raw)
++      const list = Array.isArray(parsed?.events) ? parsed.events : []
++      this.events = list
++        .filter((event) => event !== null && typeof event === 'object'
++          && typeof event.summary === 'string' && event.summary.trim() !== ''
++          && Number.isSafeInteger(event.createdAt) && event.createdAt > 0)
++        .map((event) => ({
++          id: typeof event.id === 'string' ? event.id : eventIdOf(event.summary),
++          summary: sanitizeFactText(event.summary),
++          when: typeof event.when === 'string' ? sanitizeFactText(event.when) : '',
++          importance: Math.min(5, Math.max(1, Math.round(Number.isFinite(event.importance) ? event.importance : 3))),
++          createdAt: event.createdAt,
++        }))
++        .filter((event) => event.summary !== '')
++        .slice(-this.options.chatEventMaxEvents)
++    } catch (error) {
++      this.ctx.logger.warn('deskpet events is not valid JSON: %s', error?.message ?? String(error))
++      this.events = []
++      await this.quarantineFile(this.eventPath)
++    }
++    this.ctx.logger.info('deskpet events loaded: %d', this.events.length)
++  }
++
++  eventContent() {
++    return JSON.stringify({
++      version: EVENT_VERSION,
++      updatedAt: new Date().toISOString(),
++      events: this.events,
++    }, null, 2)
++  }
++
++  persistEventsSync() {
++    this.persistFileSync(this.eventPath, this.eventContent(), 'events')
++  }
++
++  async updateEvents() {
++    if (this.disposed || !this.options.chatEventsEnabled) return
++    const selection = this.modelSelection()
++    const llm = this.service('llm')
++    if (selection === null || typeof llm?.stream !== 'function') return
++    const transcript = this.entries
++      .slice(-this.options.chatMemoryTranscriptMessages)
++      .map((entry) => `${entry.role === 'user' ? '用户' : '桌宠'}：${entry.text}`)
++      .join('\n')
++    if (transcript === '') return
++    const abort = new AbortController()
++    this.eventAbort = abort
++    const assembler = createTextAssembler()
++    try {
++      const request = {
++        provider: selection.provider,
++        model: selection.model,
++        messages: [textMessage('user', `最近对话：\n${transcript}`)],
++        system: eventExtractionPrompt(this.events, this.options.chatEventMaxEvents),
++        maxTokens: 512,
++        signal: abort.signal,
++      }
++      for await (const chunk of llm.stream(request)) {
++        abort.signal.throwIfAborted()
++        assembler.push(chunk)
++      }
++      abort.signal.throwIfAborted()
++      if (assembler.finish.kind === 'error' || assembler.finish.kind === 'aborted') {
++        throw new Error('事件整理未正常完成')
++      }
++      const events = parseEvents(assembler.text(), this.options.chatEventMaxEvents, this.now())
++      if (events === null) throw new Error('事件整理结果不是合法 JSON 数组')
++      this.events = events
++      this.eventTurns = 0
++      this.persistEventsSync()
++      this.ctx.logger.info('deskpet events updated: %d', this.events.length)
++    } catch (error) {
++      this.eventTurns = 0
++      this.ctx.logger.warn('deskpet events update failed: %s', error?.message ?? String(error))
++    } finally {
++      if (this.eventAbort === abort) this.eventAbort = null
++    }
++  }
++
++  /** 按与当前输入的相关度挑选事件（关键词二元组 + 重要度 + 新近度）。 */
++  recallEvents(text) {
++    if (!this.options.chatEventsEnabled || this.events.length === 0) return []
++    const query = bigramSet(text)
++    if (query.size === 0) return []
++    const now = this.now()
++    const scored = []
++    for (const event of this.events) {
++      const target = bigramSet(event.summary)
++      let score = 0
++      for (const gram of query) {
++        if (target.has(gram)) score += 1
++      }
++      if (score < 2) continue
++      if (event.importance >= 4) score += 0.5
++      if (now - event.createdAt <= 7 * 86_400_000) score += 0.5
++      scored.push({ event, score })
++    }
++    scored.sort((left, right) => right.score - left.score
++      || right.event.importance - left.event.importance
++      || right.event.createdAt - left.event.createdAt)
++    return scored.slice(0, EVENT_RECALL_LIMIT).map((item) => item.event)
++  }
++
+   companionDays() {
+     if (this.companion.firstSeenAt <= 0) return 0
+     return Math.max(0, Math.floor((this.now() - this.companion.firstSeenAt) / 86_400_000))
+@@ -1566,6 +1803,7 @@ export class DeskpetChat {
+     this.stopTimerTicker()
+     this.stopProactiveTicker()
+     this.memoryAbort?.abort(new Error('deskpet chat disposed'))
++    this.eventAbort?.abort(new Error('deskpet chat disposed'))
+     // 只在确实加载过、且本轮之后没有写成功时才落盘：
+     // 插件在启动握手/加载阶段被停用时，不能用空内存覆盖用户已有文件；
+     // 没有新变化时也不重写，避免无意义的时间戳变动。
+@@ -1680,6 +1918,8 @@ export class DeskpetChat {
+       this.companion.firstSeenAt = this.now()
+       this.persistCompanionSync()
+     }
++    if (!this.eventLoaded) await this.loadEvents()
++    this.recalledEvents = this.recallEvents(text)
+     this.updateEmotion(text)
+     this.moodHint = detectMoodHint(text)
+     const selection = this.modelSelection()
+@@ -1922,4 +2162,6 @@ export async function apply(ctx, config) {
+   // 恢复陪伴关系数据并启动低打扰主动关心（每分钟检查一次）。
+   await chat.loadCompanion()
+   chat.startProactiveTicker()
++  // 恢复事件记忆（具体发生过的事）。
++  await chat.loadEvents()
+ }
