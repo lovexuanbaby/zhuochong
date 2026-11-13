@@ -44,12 +44,39 @@ const MOOD_RULES = [
   { mood: 'stressed', pattern: /烦|焦虑|压力|崩溃|忙死|头大/u, hint: '用户似乎压力很大：先让情绪落地，再轻轻问一句是否需要陪着。' },
   { mood: 'happy', pattern: /开心|高兴|哈哈|太好了|兴奋/u, hint: '用户心情不错：轻轻回应这份开心，不要泼冷水。' },
 ]
+const MOOD_EFFECTS = {
+  tired: { valence: -0.18, energy: -0.25 },
+  sad: { valence: -0.3, energy: -0.1 },
+  stressed: { valence: -0.22, energy: -0.15 },
+  happy: { valence: 0.28, energy: 0.12 },
+}
+const MOOD_LABELS = { tired: '累', sad: '难过', stressed: '压力大', happy: '开心' }
+const MOOD_NEGATIONS = {
+  tired: /不累|不困|没熬夜|没加班|还好|睡得很好/u,
+  sad: /不难过|没伤心|没失落|还好|没事/u,
+  stressed: /不烦|没压力|不焦虑|还好|没事/u,
+  happy: /不开心|没那么高兴|一般般/u,
+}
+const EMOTION_MAX_RECENT = 5
 
-function detectMoodHint(text) {
+function matchMood(text) {
   for (const rule of MOOD_RULES) {
-    if (rule.pattern.test(text)) return rule.hint
+    const negation = MOOD_NEGATIONS[rule.mood]
+    if (negation !== undefined && negation.test(text)) continue
+    if (!rule.pattern.test(text)) continue
+    const hits = (text.match(rule.pattern) ?? []).length
+    return { mood: rule.mood, hint: rule.hint, intensity: Math.min(1, 0.5 + hits * 0.1) }
   }
   return null
+}
+
+function detectMoodHint(text) {
+  return matchMood(text)?.hint ?? null
+}
+
+function clamp(value, minimum, maximum, fallback = 0) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  return Math.min(maximum, Math.max(minimum, value))
 }
 
 /** 桌宠对话历史的默认落盘位置（DSH home 下，避免写进仓库）。 */
@@ -157,6 +184,11 @@ export function normalizeConfig(raw) {
     throw new TypeError('deskpet config: chatProactiveEnabled must be a boolean when set')
   }
 
+  const chatEmotionEnabled = config.chatEmotionEnabled
+  if (chatEmotionEnabled !== undefined && typeof chatEmotionEnabled !== 'boolean') {
+    throw new TypeError('deskpet config: chatEmotionEnabled must be a boolean when set')
+  }
+
   return {
     pythonPath: pythonPath.trim(),
     pingIntervalMs: positiveInteger(config.pingIntervalMs, 15_000, 'pingIntervalMs', 1_000),
@@ -189,6 +221,8 @@ export function normalizeConfig(raw) {
     // 陪伴感：低打扰主动关心 + 关系数据文件。
     chatProactiveEnabled: chatProactiveEnabled ?? true,
     chatCompanionPath: typeof chatCompanionPath === 'string' ? chatCompanionPath.trim() : undefined,
+    // 情绪状态层：心情/精力随对话变化并自然衰减。
+    chatEmotionEnabled: chatEmotionEnabled ?? true,
     chatTimeoutMs: positiveInteger(config.chatTimeoutMs, 180_000, 'chatTimeoutMs', 1_000),
   }
 }
@@ -774,6 +808,7 @@ export class DeskpetChat {
       lastInteractAt: 0,
       lastProactiveAt: 0,
       lastProactiveDay: '',
+      emotion: { valence: 0, energy: 0.5, updatedAt: 0, recent: [] },
     }
     this.companionPath = options.chatCompanionPath ?? defaultCompanionPath()
     this.companionLoad = null
@@ -1066,6 +1101,13 @@ export class DeskpetChat {
     const days = this.companionDays()
     if (this.companionLoaded && days >= 2) {
       sections.push('', '# 关系', `你们已经认识 ${days} 天，聊过 ${this.companion.turns} 轮。`)
+    }
+    if (this.options.chatEmotionEnabled && this.companionLoaded) {
+      const emotion = this.companion.emotion
+      const meaningful = emotion.recent.length > 0
+        || Math.abs(emotion.valence) >= 0.1
+        || Math.abs(emotion.energy - 0.5) >= 0.15
+      if (meaningful) sections.push('', '# 你的状态', this.emotionStateText())
     }
     if (this.moodHint) sections.push('', '# 当前情绪', this.moodHint)
     return sections.join('\n')
@@ -1369,6 +1411,7 @@ export class DeskpetChat {
     try {
       const parsed = JSON.parse(raw)
       const safe = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : 0)
+      const rawEmotion = parsed?.emotion ?? {}
       this.companion = {
         version: COMPANION_VERSION,
         firstSeenAt: safe(parsed?.firstSeenAt),
@@ -1376,12 +1419,36 @@ export class DeskpetChat {
         lastInteractAt: safe(parsed?.lastInteractAt),
         lastProactiveAt: safe(parsed?.lastProactiveAt),
         lastProactiveDay: typeof parsed?.lastProactiveDay === 'string' ? parsed.lastProactiveDay : '',
+        emotion: {
+          valence: clamp(rawEmotion?.valence, -1, 1),
+          energy: clamp(rawEmotion?.energy, 0, 1, 0.5),
+          updatedAt: safe(rawEmotion?.updatedAt),
+          recent: (Array.isArray(rawEmotion?.recent) ? rawEmotion.recent : [])
+            .filter((item) => item !== null && typeof item === 'object'
+              && typeof item.mood === 'string' && MOOD_EFFECTS[item.mood] !== undefined
+              && Number.isSafeInteger(item.at) && item.at > 0)
+            .map((item) => ({
+              mood: item.mood,
+              intensity: clamp(item.intensity, 0, 1, 0.5),
+              at: item.at,
+            }))
+            .slice(-EMOTION_MAX_RECENT),
+        },
       }
     } catch (error) {
       this.ctx.logger.warn('deskpet companion is not valid JSON: %s', error?.message ?? String(error))
-      this.companion = { ...this.companion, firstSeenAt: 0, turns: 0, lastInteractAt: 0, lastProactiveAt: 0, lastProactiveDay: '' }
+      this.companion = {
+        ...this.companion,
+        firstSeenAt: 0,
+        turns: 0,
+        lastInteractAt: 0,
+        lastProactiveAt: 0,
+        lastProactiveDay: '',
+        emotion: { valence: 0, energy: 0.5, updatedAt: 0, recent: [] },
+      }
       await this.quarantineFile(this.companionPath)
     }
+    this.decayEmotion()
     this.ctx.logger.info('deskpet companion loaded: %d turns', this.companion.turns)
   }
 
@@ -1395,6 +1462,47 @@ export class DeskpetChat {
 
   persistCompanionSync() {
     this.persistFileSync(this.companionPath, this.companionContent(), 'companion')
+  }
+
+  /** 情绪随时间的自然衰减：心情趋近 0，精力趋近 0.5。 */
+  decayEmotion(now = this.now()) {
+    const emotion = this.companion.emotion
+    if (emotion === undefined) return
+    if (emotion.updatedAt <= 0) {
+      emotion.updatedAt = now
+      return
+    }
+    const hours = Math.max(0, (now - emotion.updatedAt) / 3_600_000)
+    if (hours <= 0) return
+    emotion.valence *= 1 - Math.min(1, hours * 0.02)
+    emotion.energy += (0.5 - emotion.energy) * Math.min(1, hours * 0.05)
+    emotion.updatedAt = now
+  }
+
+  /** 根据用户这轮说的话更新情绪状态（关闭时不更新）。 */
+  updateEmotion(text) {
+    if (!this.options.chatEmotionEnabled) return
+    this.decayEmotion()
+    const mood = matchMood(text)
+    if (mood === null) return
+    const effect = MOOD_EFFECTS[mood.mood]
+    const emotion = this.companion.emotion
+    emotion.valence = clamp(emotion.valence + effect.valence * mood.intensity, -1, 1)
+    emotion.energy = clamp(emotion.energy + effect.energy * mood.intensity, 0, 1)
+    emotion.updatedAt = this.now()
+    emotion.recent.push({ mood: mood.mood, intensity: mood.intensity, at: this.now() })
+    if (emotion.recent.length > EMOTION_MAX_RECENT) {
+      emotion.recent.splice(0, emotion.recent.length - EMOTION_MAX_RECENT)
+    }
+  }
+
+  emotionStateText() {
+    const emotion = this.companion.emotion
+    const mood = emotion.valence < -0.25 ? '有些低落' : emotion.valence > 0.25 ? '不错' : '平静'
+    const energy = emotion.energy < 0.3 ? '精力偏低' : emotion.energy > 0.7 ? '精力充沛' : '精力一般'
+    const recent = [...new Set(emotion.recent.map((item) => MOOD_LABELS[item.mood]).filter(Boolean))]
+    const recentText = recent.length > 0 ? `最近感受到的用户情绪：${recent.join('、')}。` : ''
+    return `你现在心情${mood}，${energy}。${recentText}`
   }
 
   companionDays() {
@@ -1572,6 +1680,7 @@ export class DeskpetChat {
       this.companion.firstSeenAt = this.now()
       this.persistCompanionSync()
     }
+    this.updateEmotion(text)
     this.moodHint = detectMoodHint(text)
     const selection = this.modelSelection()
     if (selection === null) {
@@ -1619,6 +1728,15 @@ export class DeskpetChat {
       this.companion.turns += 1
       this.companion.lastInteractAt = this.now()
       this.persistCompanionSync()
+      if (this.options.chatEmotionEnabled) {
+        const emotion = this.companion.emotion
+        this.write({
+          type: 'pet.mood',
+          valence: Math.round(emotion.valence * 1000) / 1000,
+          energy: Math.round(emotion.energy * 1000) / 1000,
+          mood: emotion.recent.length > 0 ? emotion.recent[emotion.recent.length - 1].mood : '',
+        })
+      }
       this.noteSuccessfulTurn()
       this.ctx.logger.info(
         'deskpet chat #%s answered by %s/%s',

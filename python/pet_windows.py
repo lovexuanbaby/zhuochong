@@ -946,6 +946,16 @@ class PetWindow(QWidget):
         if label:
             self.set_status(label, "idle")
 
+    def set_mood(self, valence: object, energy: object) -> None:
+        """保存桌宠情绪状态（供后续表情/气泡风格使用）。"""
+        try:
+            self._mood = {
+                "valence": max(-1.0, min(1.0, float(valence))),
+                "energy": max(0.0, min(1.0, float(energy))),
+            }
+        except (TypeError, ValueError):
+            self._mood = {"valence": 0.0, "energy": 0.5}
+
     def chat_reply(self, text: str, ok: bool = True) -> None:
         """显示模型回复（或错误）。"""
         self._ensure_chat().finish(text, ok=ok)

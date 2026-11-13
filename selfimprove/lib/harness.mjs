@@ -99,6 +99,7 @@ export const BASE_OPTIONS = {
   chatTimerPath: undefined,
   chatProactiveEnabled: true,
   chatCompanionPath: undefined,
+  chatEmotionEnabled: true,
   chatTimeoutMs: 5_000,
 }
 

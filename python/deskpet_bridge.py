@@ -213,6 +213,9 @@ def main() -> int:
                 window.show_proactive(message.get("text") or "")
                 log(f"proactive care: {message.get('kind')}")
 
+            elif message_type == "pet.mood":
+                window.set_mood(message.get("valence"), message.get("energy"))
+
             elif message_type == "chat/accepted":
                 pending_chats.discard(message_id)
                 window.chat_status("DSH 正在思考")

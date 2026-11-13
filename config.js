@@ -29,4 +29,5 @@ export const Config = Schema.object({
   chatTimerSound: Schema.boolean().default(false).description('计时/提醒到点时播放提示音（安静型桌宠默认关闭）。'),
   chatProactiveEnabled: Schema.boolean().default(true).description('低打扰主动关心：深夜轻声提醒、很久没说话时问候（每天最多一次）。'),
   chatCompanionPath: Schema.string().description('可选：陪伴关系数据文件路径；留空使用 DSH 数据目录。'),
+  chatEmotionEnabled: Schema.boolean().default(true).description('启用情绪状态层：记录心情/精力并影响回复与气泡。'),
 })
