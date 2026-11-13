@@ -1,0 +1,261 @@
+diff --git a/config.js b/config.js
+index 4599581..f0f6c67 100644
+--- a/config.js
++++ b/config.js
+@@ -26,4 +26,5 @@ export const Config = Schema.object({
+   chatTimerEnabled: Schema.boolean().default(true).description('启用聊天中的计时/提醒命令（如“计时 5 分钟”“10 分钟后提醒我 喝水”）。'),
+   chatTimerMaxActive: integer(20).description('最多同时进行的计时/提醒数量'),
+   chatTimerPath: Schema.string().description('可选：计时/提醒文件路径；留空使用 DSH 数据目录。'),
++  chatTimerSound: Schema.boolean().default(true).description('计时/提醒到点时播放提示音。'),
+ })
+diff --git a/index.js b/index.js
+index a8431e0..6c3605a 100644
+--- a/index.js
++++ b/index.js
+@@ -105,6 +105,11 @@ export function normalizeConfig(raw) {
+     throw new TypeError('deskpet config: chatTimerEnabled must be a boolean when set')
+   }
+ 
++  const chatTimerSound = config.chatTimerSound
++  if (chatTimerSound !== undefined && typeof chatTimerSound !== 'boolean') {
++    throw new TypeError('deskpet config: chatTimerSound must be a boolean when set')
++  }
++
+   return {
+     pythonPath: pythonPath.trim(),
+     pingIntervalMs: positiveInteger(config.pingIntervalMs, 15_000, 'pingIntervalMs', 1_000),
+@@ -133,6 +138,7 @@ export function normalizeConfig(raw) {
+     chatTimerEnabled: chatTimerEnabled ?? true,
+     chatTimerMaxActive: positiveInteger(config.chatTimerMaxActive, 20, 'chatTimerMaxActive', 1),
+     chatTimerPath: typeof chatTimerPath === 'string' ? chatTimerPath.trim() : undefined,
++    chatTimerSound: chatTimerSound ?? true,
+     chatTimeoutMs: positiveInteger(config.chatTimeoutMs, 180_000, 'chatTimeoutMs', 1_000),
+   }
+ }
+@@ -1114,28 +1120,51 @@ export class DeskpetChat {
+     this.persistFileSync(this.timerPath, this.timerContent(), 'timers')
+   }
+ 
++  /** 把当前计时状态推给 Python，用于标题栏实时倒计时。 */
++  sendTimerChanged() {
++    if (this.disposed) return
++    const now = this.now()
++    this.write({
++      type: 'chat/timer',
++      event: 'changed',
++      timers: [...this.timers]
++        .sort((left, right) => left.dueAt - right.dueAt || left.id - right.id)
++        .map((timer) => ({
++          id: timer.id,
++          kind: timer.kind,
++          label: timer.label,
++          remainingMs: Math.max(0, timer.dueAt - now),
++        })),
++    })
++  }
++
+   parseTimerCommand(text) {
+     const value = (text || '').trim()
+     if (value === '') return null
+-    if (/^(?:查看计时|计时列表|提醒列表)$/u.test(value)) return { action: 'list' }
+-    if (/^取消所有计时$/u.test(value)) return { action: 'cancel-all' }
+-    let match = value.match(/^取消(?:计时)?\s*#?(\d+)$/u)
++    // 常见自然说法归一化成「数字 + 单位」再解析。
++    const normalized = value
++      .replace(/半个小时|半小时/gu, '30 分钟')
++      .replace(/一刻钟/gu, '15 分钟')
++      .replace(/一个小时|一小时/gu, '1 小时')
++    if (/^(?:查看计时|计时列表|提醒列表)$/u.test(normalized)) return { action: 'list' }
++    if (/^取消所有计时$/u.test(normalized)) return { action: 'cancel-all' }
++    let match = normalized.match(/^取消(?:计时)?\s*#?(\d+)$/u)
+     if (match) return { action: 'cancel', id: Number(match[1]) }
+-    match = value.match(/^(?:倒计时|计时)\s*(\d+)\s*(秒钟|秒|分钟|分|小时|钟头|min|m|s|h)\s*$/iu)
++    match = normalized.match(/^(?:倒计时|计时)\s*(\d+)\s*(秒钟|秒|分钟|分|小时|钟头|min|m|s|h)\s*$/iu)
+     if (match) {
+       const durationMs = durationToMs(match[1], match[2])
+       if (durationMs !== null) {
+         return { action: 'create', kind: 'countdown', durationMs, label: '' }
+       }
+     }
+-    match = value.match(/^(?:提醒我\s*)?(\d+)\s*(秒钟|秒|分钟|分|小时|钟头|min|m|s|h)\s*后\s*(?:提醒我|提醒)?\s*(.*)$/iu)
++    match = normalized.match(/^(?:提醒我\s*)?(\d+)\s*(秒钟|秒|分钟|分|小时|钟头|min|m|s|h)\s*后\s*(?:提醒我|提醒)?\s*(.*)$/iu)
+     if (match) {
+       const durationMs = durationToMs(match[1], match[2])
+       if (durationMs !== null) {
+         return { action: 'create', kind: 'reminder', durationMs, label: (match[3] ?? '').trim() }
+       }
+     }
+-    if (TIMER_ACTION_PREFIX.test(value)) return { action: 'invalid' }
++    if (TIMER_ACTION_PREFIX.test(normalized)) return { action: 'invalid' }
+     return null
+   }
+ 
+@@ -1161,6 +1190,7 @@ export class DeskpetChat {
+       const count = this.timers.length
+       this.timers = []
+       this.persistTimersSync()
++      this.sendTimerChanged()
+       return `已取消全部 ${count} 个计时。`
+     }
+     if (command.action === 'cancel') {
+@@ -1168,6 +1198,7 @@ export class DeskpetChat {
+       if (target === undefined) return `没有找到计时 #${command.id}，可用「查看计时」确认。`
+       this.timers = this.timers.filter(timer => timer.id !== command.id)
+       this.persistTimersSync()
++      this.sendTimerChanged()
+       return `已取消计时 #${command.id}。`
+     }
+     if (command.action === 'create') {
+@@ -1187,6 +1218,7 @@ export class DeskpetChat {
+       }
+       this.timers.push(timer)
+       this.persistTimersSync()
++      this.sendTimerChanged()
+       const duration = formatDuration(command.durationMs)
+       if (command.kind === 'countdown') {
+         return `好，开始计时 ${duration}（#${id}）。到点我会提醒你。`
+@@ -1205,21 +1237,25 @@ export class DeskpetChat {
+     const due = this.timers
+       .filter(timer => timer.dueAt <= now)
+       .sort((left, right) => left.dueAt - right.dueAt || left.id - right.id)
+-    if (due.length === 0) return 0
+-    const dueIds = new Set(due.map(timer => timer.id))
+-    this.timers = this.timers.filter(timer => !dueIds.has(timer.id))
+-    this.persistTimersSync()
+-    for (const timer of due) {
+-      this.write({
+-        type: 'chat/timer',
+-        event: 'fired',
+-        id: timer.id,
+-        kind: timer.kind,
+-        label: timer.label,
+-        text: timerFireText(timer),
+-        dueAt: timer.dueAt,
+-      })
++    if (due.length > 0) {
++      const dueIds = new Set(due.map(timer => timer.id))
++      this.timers = this.timers.filter(timer => !dueIds.has(timer.id))
++      this.persistTimersSync()
++      for (const timer of due) {
++        this.write({
++          type: 'chat/timer',
++          event: 'fired',
++          id: timer.id,
++          kind: timer.kind,
++          label: timer.label,
++          text: timerFireText(timer),
++          dueAt: timer.dueAt,
++          sound: this.options.chatTimerSound !== false,
++        })
++      }
+     }
++    // 有进行中的计时就每秒刷新倒计时；最后一个触发后也推一次空列表。
++    if (this.timers.length > 0 || due.length > 0) this.sendTimerChanged()
+     return due.length
+   }
+ 
+diff --git a/python/deskpet_bridge.py b/python/deskpet_bridge.py
+index d188c32..08d420e 100644
+--- a/python/deskpet_bridge.py
++++ b/python/deskpet_bridge.py
+@@ -203,8 +203,11 @@ def main() -> int:
+                     window.show_timer_reminder(
+                         message.get("text") or "时间到了",
+                         message.get("kind") or "countdown",
++                        bool(message.get("sound", False)),
+                     )
+                     log(f"timer fired: {message.get('text')}")
++                elif message.get("event") == "changed":
++                    window.set_timers(message.get("timers"))
+ 
+             elif message_type == "chat/accepted":
+                 pending_chats.discard(message_id)
+diff --git a/python/pet_windows.py b/python/pet_windows.py
+index a407100..576be7b 100644
+--- a/python/pet_windows.py
++++ b/python/pet_windows.py
+@@ -178,6 +178,7 @@ class ChatDialog(QDialog):
+         self._messages: list[tuple[str, str]] = []
+         self._last_date: str | None = None
+         self._memory_count = 0
++        self._timers: list[float] = []
+         self._memory_dialog: MemoryDialog | None = None
+         self._status_base = ""
+         self._status_dots = 0
+@@ -393,10 +394,37 @@ class ChatDialog(QDialog):
+     def set_memory_count(self, count: int) -> None:
+         """更新标题栏提示：桌宠已经记住了多少件事。"""
+         self._memory_count = max(0, count)
+-        if count > 0:
+-            self._hint.setText(f"模型回复 · 已记住 {count} 件事")
+-        else:
+-            self._hint.setText("直接用 DSH 配置的模型回复")
++        self._update_hint()
++
++    def set_timers(self, timers: object) -> None:
++        """更新标题栏的实时倒计时（由 Host 每秒推送）。"""
++        remaining: list[float] = []
++        if isinstance(timers, list):
++            for item in timers:
++                if not isinstance(item, dict):
++                    continue
++                value = item.get("remainingMs")
++                if isinstance(value, (int, float)) and value >= 0:
++                    remaining.append(float(value))
++        self._timers = remaining
++        self._update_hint()
++
++    def _update_hint(self) -> None:
++        parts: list[str] = []
++        if self._timers:
++            parts.append(f"⏳ {len(self._timers)} 个计时 · {self._format_remaining(min(self._timers))}")
++        if self._memory_count > 0:
++            parts.append(f"已记住 {self._memory_count} 件事")
++        self._hint.setText(" · ".join(parts) if parts else "直接用 DSH 配置的模型回复")
++
++    @staticmethod
++    def _format_remaining(remaining_ms: float) -> str:
++        seconds = int(round(remaining_ms / 1000))
++        if seconds >= 3600:
++            return f"{seconds // 3600}小时{(seconds % 3600) // 60}分"
++        if seconds >= 60:
++            return f"{seconds // 60}分{seconds % 60}秒"
++        return f"{seconds}秒"
+ 
+     def open_memory(self) -> None:
+         if self._memory_dialog is None:
+@@ -899,9 +927,15 @@ class PetWindow(QWidget):
+     def memory_error(self, text: object, request_id=None) -> None:
+         self._ensure_chat().memory_error(str(text or "记忆操作失败"), request_id)
+ 
+-    def show_timer_reminder(self, text: object, kind: str = "countdown") -> None:
+-        """计时/提醒到点：桌宠气泡 + 对话框消息。"""
++    def set_timers(self, timers: object) -> None:
++        """把进行中的计时同步给对话框（标题栏倒计时）。"""
++        self._ensure_chat().set_timers(timers)
++
++    def show_timer_reminder(self, text: object, kind: str = "countdown", sound: bool = False) -> None:
++        """计时/提醒到点：桌宠气泡 + 对话框消息（可选提示音）。"""
+         label = str(text or "时间到了")
++        if sound:
++            QApplication.beep()
+         self.set_status(f"⏰ {label}", "done")
+         if self._chat is not None:
+             self._chat.append_notice(f"⏰ {label}", "pet")
+diff --git a/tests/chat-ui-smoke.py b/tests/chat-ui-smoke.py
+index 71e2b19..7e903fe 100644
+--- a/tests/chat-ui-smoke.py
++++ b/tests/chat-ui-smoke.py
+@@ -163,6 +163,12 @@ def main() -> int:
+     window.show_timer_reminder("提醒：喝水")
+     checks.append(("计时提醒显示在对话窗", dialog.messages[-1] == ("pet", "⏰ 提醒：喝水")))
+ 
++    # 标题栏实时倒计时（Host 每秒推送 changed）。
++    window.set_timers([{"id": 1, "kind": "countdown", "remainingMs": 61_000}])
++    checks.append(("计时倒计时显示在标题栏", "⏳" in dialog._hint.text() and "1分1秒" in dialog._hint.text()))
++    window.set_timers([])
++    checks.append(("计时结束后标题栏恢复", "DSH 配置的模型" in dialog._hint.text()))
++
+     # 记忆管理：列表可加载，删除入口携带稳定 index；不改变聊天气泡。
+     memory_requests: list[object] = []
+     delete_requests: list[object] = []
