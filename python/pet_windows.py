@@ -940,6 +940,12 @@ class PetWindow(QWidget):
         if self._chat is not None:
             self._chat.append_notice(f"⏰ {label}", "pet")
 
+    def show_proactive(self, text: object) -> None:
+        """低打扰主动关心：只轻声更新气泡，不写入聊天记录。"""
+        label = str(text or "").strip()
+        if label:
+            self.set_status(label, "idle")
+
     def chat_reply(self, text: str, ok: bool = True) -> None:
         """显示模型回复（或错误）。"""
         self._ensure_chat().finish(text, ok=ok)

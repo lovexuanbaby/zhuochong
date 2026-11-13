@@ -291,20 +291,20 @@ export const timerScenarios = [
   },
   {
     id: 'timer-sound-flag',
-    title: '到点消息携带提示音开关',
+    title: '到点消息携带提示音开关（安静型默认静音）',
     weight: 1,
     async run() {
       const env = createTimerEnv()
       await command(env, '计时 10 秒')
       env.clock.advance(10_000)
       env.chat.tickTimers()
-      assert.equal(firedMessages(env)[0].sound, true)
+      assert.equal(firedMessages(env)[0].sound, false, '默认应静音')
 
-      const muted = createTimerEnv({ chat: { chatTimerSound: false } })
-      await command(muted, '计时 10 秒', 1)
-      muted.clock.advance(10_000)
-      muted.chat.tickTimers()
-      assert.equal(firedMessages(muted)[0].sound, false)
+      const loud = createTimerEnv({ chat: { chatTimerSound: true } })
+      await command(loud, '计时 10 秒', 1)
+      loud.clock.advance(10_000)
+      loud.chat.tickTimers()
+      assert.equal(firedMessages(loud)[0].sound, true)
     },
   },
 ]

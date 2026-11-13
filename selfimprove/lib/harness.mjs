@@ -97,6 +97,8 @@ export const BASE_OPTIONS = {
   chatTimerEnabled: true,
   chatTimerMaxActive: 20,
   chatTimerPath: undefined,
+  chatProactiveEnabled: true,
+  chatCompanionPath: undefined,
   chatTimeoutMs: 5_000,
 }
 
@@ -108,6 +110,7 @@ export function createEnv({ harness: harnessOptions = {}, chat: chatOptions = {}
     chatHistoryPath: join(dir, 'chat-history.json'),
     chatMemoryPath: join(dir, 'user-memory.json'),
     chatTimerPath: join(dir, 'timers.json'),
+    chatCompanionPath: join(dir, 'companion.json'),
   }
   const chat = new DeskpetChat(harness.ctx, harness.bridge, {
     ...BASE_OPTIONS,
@@ -121,6 +124,7 @@ export function createEnv({ harness: harnessOptions = {}, chat: chatOptions = {}
     historyPath: pathOptions.chatHistoryPath,
     memoryPath: pathOptions.chatMemoryPath,
     timerPath: pathOptions.chatTimerPath,
+    companionPath: pathOptions.chatCompanionPath,
   }
 }
 

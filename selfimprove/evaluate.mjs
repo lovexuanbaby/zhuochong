@@ -15,10 +15,12 @@ import { fileURLToPath } from 'node:url'
 
 import { scenarios as memoryScenarios } from './scenarios/memory.mjs'
 import { timerScenarios } from './scenarios/timer.mjs'
+import { companionScenarios } from './scenarios/companion.mjs'
 
 const scenarios = [
   ...memoryScenarios.map((scenario) => ({ ...scenario, group: 'memory' })),
   ...timerScenarios.map((scenario) => ({ ...scenario, group: 'timer' })),
+  ...companionScenarios.map((scenario) => ({ ...scenario, group: 'companion' })),
 ]
 
 const HERE = dirname(fileURLToPath(import.meta.url))

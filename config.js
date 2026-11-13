@@ -26,5 +26,7 @@ export const Config = Schema.object({
   chatTimerEnabled: Schema.boolean().default(true).description('启用聊天中的计时/提醒命令（如“计时 5 分钟”“10 分钟后提醒我 喝水”）。'),
   chatTimerMaxActive: integer(20).description('最多同时进行的计时/提醒数量'),
   chatTimerPath: Schema.string().description('可选：计时/提醒文件路径；留空使用 DSH 数据目录。'),
-  chatTimerSound: Schema.boolean().default(true).description('计时/提醒到点时播放提示音。'),
+  chatTimerSound: Schema.boolean().default(false).description('计时/提醒到点时播放提示音（安静型桌宠默认关闭）。'),
+  chatProactiveEnabled: Schema.boolean().default(true).description('低打扰主动关心：深夜轻声提醒、很久没说话时问候（每天最多一次）。'),
+  chatCompanionPath: Schema.string().description('可选：陪伴关系数据文件路径；留空使用 DSH 数据目录。'),
 })

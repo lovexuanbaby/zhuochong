@@ -21,6 +21,36 @@ const SCRIPT_PATH = join(PLUGIN_DIR, 'python', 'deskpet_bridge.py')
 const CHAT_HISTORY_VERSION = 1
 const MEMORY_VERSION = 1
 const MEMORY_KINDS = new Set(['preference', 'habit', 'goal', 'fact', 'relation'])
+const COMPANION_VERSION = 1
+
+/** 安静温柔型桌宠的人格设定（用户确认的版本）。 */
+const DEFAULT_PERSONA = [
+  '你是一只安静的青色小机器人桌宠，是用户的陪伴伙伴。',
+  '性格安静、温柔、有耐心，话不多。',
+  '',
+  '说话规则：',
+  '- 每次回复 1～3 句，语气柔和，少用感叹号',
+  '- 先接住情绪，再回应内容；不说教、不急着给建议',
+  '- 默认称呼「你」；用户告诉你名字或称呼后，再温柔地用上',
+  '- 不主动刷屏；关心的话只说一次',
+  '- 不假装人类，也不反复强调自己是 AI',
+  '- 不使用 Markdown 标题或表格；不要提及内部实现或协议',
+].join('\n')
+
+/** 情绪关键词 → 给模型的回应提示。 */
+const MOOD_RULES = [
+  { mood: 'tired', pattern: /累|困|熬夜|加班|疲惫|没精神/u, hint: '用户似乎很累：先接住疲惫，语气放轻，不要急着给建议。' },
+  { mood: 'sad', pattern: /难过|伤心|失落|想哭|不开心|emo|委屈/u, hint: '用户似乎情绪低落：先共情，不要讲道理，也不要急着转移话题。' },
+  { mood: 'stressed', pattern: /烦|焦虑|压力|崩溃|忙死|头大/u, hint: '用户似乎压力很大：先让情绪落地，再轻轻问一句是否需要陪着。' },
+  { mood: 'happy', pattern: /开心|高兴|哈哈|太好了|兴奋/u, hint: '用户心情不错：轻轻回应这份开心，不要泼冷水。' },
+]
+
+function detectMoodHint(text) {
+  for (const rule of MOOD_RULES) {
+    if (rule.pattern.test(text)) return rule.hint
+  }
+  return null
+}
 
 /** 桌宠对话历史的默认落盘位置（DSH home 下，避免写进仓库）。 */
 function defaultChatHistoryPath() {
@@ -40,6 +70,12 @@ function defaultTimersPath() {
   return join(home, 'deskpet', 'timers.json')
 }
 
+/** 陪伴关系数据的默认落盘位置。 */
+function defaultCompanionPath() {
+  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  return join(home, 'deskpet', 'companion.json')
+}
+
 function positiveInteger(value, fallback, field, min = 1) {
   if (value === undefined || value === null) return fallback
   if (!Number.isSafeInteger(value) || value < min || value > 2_147_483_647) {
@@ -55,7 +91,7 @@ export function normalizeConfig(raw) {
   }
 
   config = { ...config }
-  for (const field of ['chatProvider', 'chatModel', 'chatSystemPrompt', 'chatHistoryPath', 'chatMemoryPath', 'chatTimerPath']) {
+  for (const field of ['chatProvider', 'chatModel', 'chatSystemPrompt', 'chatHistoryPath', 'chatMemoryPath', 'chatTimerPath', 'chatCompanionPath']) {
     if (typeof config[field] === 'string' && config[field].trim() === '') delete config[field]
   }
   const pythonPath = resolvePythonPath(config.pythonPath)
@@ -110,6 +146,17 @@ export function normalizeConfig(raw) {
     throw new TypeError('deskpet config: chatTimerSound must be a boolean when set')
   }
 
+  const chatCompanionPath = config.chatCompanionPath
+  if (chatCompanionPath !== undefined
+    && (typeof chatCompanionPath !== 'string' || chatCompanionPath.trim() === '')) {
+    throw new TypeError('deskpet config: chatCompanionPath must be a non-empty string when set')
+  }
+
+  const chatProactiveEnabled = config.chatProactiveEnabled
+  if (chatProactiveEnabled !== undefined && typeof chatProactiveEnabled !== 'boolean') {
+    throw new TypeError('deskpet config: chatProactiveEnabled must be a boolean when set')
+  }
+
   return {
     pythonPath: pythonPath.trim(),
     pingIntervalMs: positiveInteger(config.pingIntervalMs, 15_000, 'pingIntervalMs', 1_000),
@@ -121,7 +168,7 @@ export function normalizeConfig(raw) {
     chatModel: typeof chatModel === 'string' ? chatModel.trim() : undefined,
     chatSystemPrompt: typeof chatSystemPrompt === 'string'
       ? chatSystemPrompt.trim()
-      : '你是 DeepSeek Harness 桌面上的一个圆滚滚的青色小机器人桌宠，是用户的陪伴伙伴。用简洁自然的中文回答用户，语气轻松友好，一般不超过三句话。不要使用 Markdown 标题或表格，不要提及内部实现或协议，也不要说自己是 AI 助手。',
+      : DEFAULT_PERSONA,
     chatMaxTokens: positiveInteger(config.chatMaxTokens, 1_024, 'chatMaxTokens', 16),
     // 带进模型上下文的最近消息数。
     chatHistoryMessages: positiveInteger(config.chatHistoryMessages, 40, 'chatHistoryMessages', 1),
@@ -138,7 +185,10 @@ export function normalizeConfig(raw) {
     chatTimerEnabled: chatTimerEnabled ?? true,
     chatTimerMaxActive: positiveInteger(config.chatTimerMaxActive, 20, 'chatTimerMaxActive', 1),
     chatTimerPath: typeof chatTimerPath === 'string' ? chatTimerPath.trim() : undefined,
-    chatTimerSound: chatTimerSound ?? true,
+    chatTimerSound: chatTimerSound ?? false,
+    // 陪伴感：低打扰主动关心 + 关系数据文件。
+    chatProactiveEnabled: chatProactiveEnabled ?? true,
+    chatCompanionPath: typeof chatCompanionPath === 'string' ? chatCompanionPath.trim() : undefined,
     chatTimeoutMs: positiveInteger(config.chatTimeoutMs, 180_000, 'chatTimeoutMs', 1_000),
   }
 }
@@ -716,6 +766,20 @@ export class DeskpetChat {
     this.timerSeq = 0
     this.timerTickHandle = null
     this.now = typeof options.now === 'function' ? options.now : () => Date.now()
+    // 陪伴关系：认识时间、聊天轮数、主动关心的节流。
+    this.companion = {
+      version: COMPANION_VERSION,
+      firstSeenAt: 0,
+      turns: 0,
+      lastInteractAt: 0,
+      lastProactiveAt: 0,
+      lastProactiveDay: '',
+    }
+    this.companionPath = options.chatCompanionPath ?? defaultCompanionPath()
+    this.companionLoad = null
+    this.companionLoaded = false
+    this.proactiveHandle = null
+    this.moodHint = null
     this.pending = null
     this.disposed = false
   }
@@ -989,17 +1053,22 @@ export class DeskpetChat {
     })
   }
 
-  /** 注入到每次回复的系统提示里。 */
+  /** 注入到每次回复的系统提示里：人格 + 长期记忆 + 关系感 + 当前情绪。 */
   composeSystemPrompt() {
-    const base = this.options.chatSystemPrompt
-    if (!this.options.chatMemoryEnabled || this.memoryFacts.length === 0) return base
-    const lines = this.memoryFacts.map((fact) => `- ${fact.text}`)
-    return [
-      base,
-      '',
-      '# 你记得关于用户的事（长期记忆，回答时自然使用，不要逐条复述）',
-      ...lines,
-    ].join('\n')
+    const sections = [this.options.chatSystemPrompt]
+    if (this.options.chatMemoryEnabled && this.memoryFacts.length > 0) {
+      sections.push(
+        '',
+        '# 你记得关于用户的事（长期记忆，回答时自然使用，不要逐条复述）',
+        ...this.memoryFacts.map((fact) => `- ${fact.text}`),
+      )
+    }
+    const days = this.companionDays()
+    if (this.companionLoaded && days >= 2) {
+      sections.push('', '# 关系', `你们已经认识 ${days} 天，聊过 ${this.companion.turns} 轮。`)
+    }
+    if (this.moodHint) sections.push('', '# 当前情绪', this.moodHint)
+    return sections.join('\n')
   }
 
   /** 每完成一轮对话计数；达到阈值就异步整理一次长期记忆。 */
@@ -1250,7 +1319,7 @@ export class DeskpetChat {
           label: timer.label,
           text: timerFireText(timer),
           dueAt: timer.dueAt,
-          sound: this.options.chatTimerSound !== false,
+          sound: this.options.chatTimerSound === true,
         })
       }
     }
@@ -1279,11 +1348,115 @@ export class DeskpetChat {
     this.timerTickHandle = null
   }
 
+  // ---------------------------------------------------------------- 陪伴关系
+
+  async loadCompanion() {
+    this.companionLoad ??= this.readCompanion().finally(() => { this.companionLoaded = true })
+    return this.companionLoad
+  }
+
+  async readCompanion() {
+    let raw
+    try {
+      raw = await readFile(this.companionPath, 'utf8')
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        this.ctx.logger.warn('deskpet companion load failed: %s', error?.message ?? String(error))
+        await this.quarantineFile(this.companionPath)
+      }
+      return
+    }
+    try {
+      const parsed = JSON.parse(raw)
+      const safe = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : 0)
+      this.companion = {
+        version: COMPANION_VERSION,
+        firstSeenAt: safe(parsed?.firstSeenAt),
+        turns: safe(parsed?.turns),
+        lastInteractAt: safe(parsed?.lastInteractAt),
+        lastProactiveAt: safe(parsed?.lastProactiveAt),
+        lastProactiveDay: typeof parsed?.lastProactiveDay === 'string' ? parsed.lastProactiveDay : '',
+      }
+    } catch (error) {
+      this.ctx.logger.warn('deskpet companion is not valid JSON: %s', error?.message ?? String(error))
+      this.companion = { ...this.companion, firstSeenAt: 0, turns: 0, lastInteractAt: 0, lastProactiveAt: 0, lastProactiveDay: '' }
+      await this.quarantineFile(this.companionPath)
+    }
+    this.ctx.logger.info('deskpet companion loaded: %d turns', this.companion.turns)
+  }
+
+  companionContent() {
+    return JSON.stringify({
+      version: COMPANION_VERSION,
+      updatedAt: new Date().toISOString(),
+      ...this.companion,
+    }, null, 2)
+  }
+
+  persistCompanionSync() {
+    this.persistFileSync(this.companionPath, this.companionContent(), 'companion')
+  }
+
+  companionDays() {
+    if (this.companion.firstSeenAt <= 0) return 0
+    return Math.max(0, Math.floor((this.now() - this.companion.firstSeenAt) / 86_400_000))
+  }
+
+  /** 低打扰主动关心：深夜轻声提醒、白天很久没说话时问候；每天最多一次。 */
+  tickProactive() {
+    if (this.disposed || !this.options.chatProactiveEnabled || !this.companionLoaded) return null
+    const now = this.now()
+    const date = new Date(now)
+    const dayKey = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`
+    if (this.companion.lastProactiveDay === dayKey) return null
+    const hour = date.getHours()
+    const silentFor = this.companion.lastInteractAt > 0
+      ? now - this.companion.lastInteractAt
+      : Number.POSITIVE_INFINITY
+    let kind = null
+    let text = null
+    if (hour >= 22 && silentFor <= 6 * 3_600_000) {
+      kind = 'night'
+      text = '夜深了，我把灯光调暗了一点。早点休息，我在这儿。'
+    } else if (hour >= 10 && hour <= 21 && silentFor >= 4 * 3_600_000) {
+      kind = 'silence'
+      text = '好久没听到你的声音了。想聊的时候，我一直在。'
+    }
+    if (kind === null) return null
+    this.companion.lastProactiveAt = now
+    this.companion.lastProactiveDay = dayKey
+    this.persistCompanionSync()
+    this.write({ type: 'chat/proactive', kind, text })
+    this.ctx.logger.info('deskpet proactive care: %s', kind)
+    return { kind, text }
+  }
+
+  startProactiveTicker() {
+    if (this.proactiveHandle !== null || this.disposed || !this.options.chatProactiveEnabled) return
+    const tick = () => {
+      try {
+        this.tickProactive()
+      } catch (error) {
+        this.ctx.logger.warn('deskpet proactive tick failed: %s', error?.message ?? String(error))
+      }
+    }
+    tick()
+    this.proactiveHandle = setInterval(tick, 60_000)
+    this.proactiveHandle.unref?.()
+  }
+
+  stopProactiveTicker() {
+    if (this.proactiveHandle === null) return
+    clearInterval(this.proactiveHandle)
+    this.proactiveHandle = null
+  }
+
   // ---------------------------------------------------------------- 对话
 
   dispose() {
     this.disposed = true
     this.stopTimerTicker()
+    this.stopProactiveTicker()
     this.memoryAbort?.abort(new Error('deskpet chat disposed'))
     // 只在确实加载过、且本轮之后没有写成功时才落盘：
     // 插件在启动握手/加载阶段被停用时，不能用空内存覆盖用户已有文件；
@@ -1394,6 +1567,12 @@ export class DeskpetChat {
         return
       }
     }
+    if (!this.companionLoaded) await this.loadCompanion()
+    if (this.companion.firstSeenAt === 0) {
+      this.companion.firstSeenAt = this.now()
+      this.persistCompanionSync()
+    }
+    this.moodHint = detectMoodHint(text)
     const selection = this.modelSelection()
     if (selection === null) {
       this.fail(chatId, '无法确定 DSH 当前使用的模型：请先在 DSH 里选择模型，或在插件配置里指定 chatProvider/chatModel')
@@ -1437,6 +1616,9 @@ export class DeskpetChat {
         reason: finish === 'max-tokens' ? 'truncated' : 'completed',
       })
       void this.persistHistory()
+      this.companion.turns += 1
+      this.companion.lastInteractAt = this.now()
+      this.persistCompanionSync()
       this.noteSuccessfulTurn()
       this.ctx.logger.info(
         'deskpet chat #%s answered by %s/%s',
@@ -1619,4 +1801,7 @@ export async function apply(ctx, config) {
   // 恢复计时/提醒并启动 1 秒一次的 ticker（过期计时会补触发一次）。
   await chat.loadTimers()
   chat.startTimerTicker()
+  // 恢复陪伴关系数据并启动低打扰主动关心（每分钟检查一次）。
+  await chat.loadCompanion()
+  chat.startProactiveTicker()
 }

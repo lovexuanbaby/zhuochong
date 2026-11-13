@@ -209,6 +209,10 @@ def main() -> int:
                 elif message.get("event") == "changed":
                     window.set_timers(message.get("timers"))
 
+            elif message_type == "chat/proactive":
+                window.show_proactive(message.get("text") or "")
+                log(f"proactive care: {message.get('kind')}")
+
             elif message_type == "chat/accepted":
                 pending_chats.discard(message_id)
                 window.chat_status("DSH 正在思考")
