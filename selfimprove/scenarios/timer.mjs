@@ -237,4 +237,74 @@ export const timerScenarios = [
       assert.equal(env.chat.timers.length, 2)
     },
   },
+  {
+    id: 'timer-natural-durations',
+    title: '自然说法：半小时/一刻钟/一小时',
+    weight: 2,
+    async run() {
+      const env = createTimerEnv()
+      assert.match(await command(env, '半小时后提醒我 喝水', 1), /喝水/)
+      assert.equal(env.chat.timers[0].dueAt, env.clock.now + 30 * MINUTE)
+      await command(env, '一刻钟后提醒我 站起来', 2)
+      assert.equal(env.chat.timers[1].dueAt, env.clock.now + 15 * MINUTE)
+      const hour = await command(env, '计时 一小时', 3)
+      assert.match(hour, /#3/)
+      assert.equal(env.chat.timers[2].dueAt, env.clock.now + 60 * MINUTE)
+    },
+  },
+  {
+    id: 'timer-changed-protocol',
+    title: '创建/取消时推送计时状态，tick 刷新剩余时间',
+    weight: 2,
+    async run() {
+      const env = createTimerEnv()
+      await command(env, '计时 5 分钟')
+      const changed = () => env.harness.sent.filter((m) => m.type === 'chat/timer' && m.event === 'changed')
+      let list = changed()
+      assert.ok(list.length >= 1, '创建后应推送 changed')
+      assert.equal(list[list.length - 1].timers.length, 1)
+      assert.equal(list[list.length - 1].timers[0].remainingMs, 5 * MINUTE)
+      env.clock.advance(1_000)
+      env.chat.tickTimers()
+      list = changed()
+      const latest = list[list.length - 1]
+      assert.equal(latest.timers.length, 1)
+      assert.equal(latest.timers[0].remainingMs, 5 * MINUTE - 1_000)
+      await command(env, '取消计时 1', 2)
+      list = changed()
+      assert.equal(list[list.length - 1].timers.length, 0)
+    },
+  },
+  {
+    id: 'timer-fired-clears-changed',
+    title: '到点后推送空的计时列表',
+    weight: 1,
+    async run() {
+      const env = createTimerEnv()
+      await command(env, '计时 1 分钟')
+      env.clock.advance(MINUTE)
+      env.chat.tickTimers()
+      const changed = env.harness.sent.filter((m) => m.type === 'chat/timer' && m.event === 'changed')
+      assert.ok(changed.length >= 2)
+      assert.equal(changed[changed.length - 1].timers.length, 0)
+    },
+  },
+  {
+    id: 'timer-sound-flag',
+    title: '到点消息携带提示音开关',
+    weight: 1,
+    async run() {
+      const env = createTimerEnv()
+      await command(env, '计时 10 秒')
+      env.clock.advance(10_000)
+      env.chat.tickTimers()
+      assert.equal(firedMessages(env)[0].sound, true)
+
+      const muted = createTimerEnv({ chat: { chatTimerSound: false } })
+      await command(muted, '计时 10 秒', 1)
+      muted.clock.advance(10_000)
+      muted.chat.tickTimers()
+      assert.equal(firedMessages(muted)[0].sound, false)
+    },
+  },
 ]

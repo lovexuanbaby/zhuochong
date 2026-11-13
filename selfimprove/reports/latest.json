@@ -2,9 +2,9 @@
   "tool": "deskpet-selfimprove-evaluate",
   "version": 1,
   "mode": "deterministic-mock-llm",
-  "startedAt": "2026-11-13T16:42:24.879Z",
-  "scenarios": 25,
-  "passed": 25,
+  "startedAt": "2026-11-13T16:59:52.218Z",
+  "scenarios": 29,
+  "passed": 29,
   "failed": 0,
   "score": 100,
   "checks": [
@@ -13,7 +13,7 @@
       "title": "记忆整理请求结构正确",
       "weight": 2,
       "ok": true,
-      "durationMs": 5
+      "durationMs": 6
     },
     {
       "id": "parse-plain",
@@ -27,14 +27,14 @@
       "title": "解析代码块包裹的 JSON",
       "weight": 1,
       "ok": true,
-      "durationMs": 2
+      "durationMs": 3
     },
     {
       "id": "parse-prose",
       "title": "解析前后带说明文字的 JSON",
       "weight": 1,
       "ok": true,
-      "durationMs": 3
+      "durationMs": 4
     },
     {
       "id": "parse-invalid-keeps-old",
@@ -48,7 +48,7 @@
       "title": "去重并遵守条数上限",
       "weight": 1,
       "ok": true,
-      "durationMs": 2
+      "durationMs": 3
     },
     {
       "id": "kind-normalize",
@@ -62,7 +62,7 @@
       "title": "已删除记忆不会被重新保存",
       "weight": 2,
       "ok": true,
-      "durationMs": 10
+      "durationMs": 9
     },
     {
       "id": "delete-flow",
@@ -76,7 +76,7 @@
       "title": "记忆注入系统提示，关闭时不注入",
       "weight": 2,
       "ok": true,
-      "durationMs": 3
+      "durationMs": 4
     },
     {
       "id": "corrupt-quarantine",
@@ -104,7 +104,7 @@
       "title": "整理提示词提醒不要恢复已删除记忆",
       "weight": 2,
       "ok": true,
-      "durationMs": 4
+      "durationMs": 6
     },
     {
       "id": "timer-create-countdown",
@@ -125,7 +125,7 @@
       "title": "倒计时到点触发并清理",
       "weight": 2,
       "ok": true,
-      "durationMs": 11
+      "durationMs": 9
     },
     {
       "id": "timer-fire-reminder",
@@ -139,7 +139,7 @@
       "title": "并发计时互不干扰",
       "weight": 2,
       "ok": true,
-      "durationMs": 5
+      "durationMs": 4
     },
     {
       "id": "timer-list-cancel",
@@ -167,7 +167,7 @@
       "title": "过期计时重启后只补触发一次",
       "weight": 2,
       "ok": true,
-      "durationMs": 16
+      "durationMs": 17
     },
     {
       "id": "timer-corrupt-quarantine",
@@ -182,6 +182,34 @@
       "weight": 1,
       "ok": true,
       "durationMs": 3
+    },
+    {
+      "id": "timer-natural-durations",
+      "title": "自然说法：半小时/一刻钟/一小时",
+      "weight": 2,
+      "ok": true,
+      "durationMs": 3
+    },
+    {
+      "id": "timer-changed-protocol",
+      "title": "创建/取消时推送计时状态，tick 刷新剩余时间",
+      "weight": 2,
+      "ok": true,
+      "durationMs": 3
+    },
+    {
+      "id": "timer-fired-clears-changed",
+      "title": "到点后推送空的计时列表",
+      "weight": 1,
+      "ok": true,
+      "durationMs": 3
+    },
+    {
+      "id": "timer-sound-flag",
+      "title": "到点消息携带提示音开关",
+      "weight": 1,
+      "ok": true,
+      "durationMs": 5
     }
   ]
 }

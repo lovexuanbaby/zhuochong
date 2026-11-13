@@ -105,6 +105,11 @@ export function normalizeConfig(raw) {
     throw new TypeError('deskpet config: chatTimerEnabled must be a boolean when set')
   }
 
+  const chatTimerSound = config.chatTimerSound
+  if (chatTimerSound !== undefined && typeof chatTimerSound !== 'boolean') {
+    throw new TypeError('deskpet config: chatTimerSound must be a boolean when set')
+  }
+
   return {
     pythonPath: pythonPath.trim(),
     pingIntervalMs: positiveInteger(config.pingIntervalMs, 15_000, 'pingIntervalMs', 1_000),
@@ -133,6 +138,7 @@ export function normalizeConfig(raw) {
     chatTimerEnabled: chatTimerEnabled ?? true,
     chatTimerMaxActive: positiveInteger(config.chatTimerMaxActive, 20, 'chatTimerMaxActive', 1),
     chatTimerPath: typeof chatTimerPath === 'string' ? chatTimerPath.trim() : undefined,
+    chatTimerSound: chatTimerSound ?? true,
     chatTimeoutMs: positiveInteger(config.chatTimeoutMs, 180_000, 'chatTimeoutMs', 1_000),
   }
 }
@@ -1114,28 +1120,51 @@ export class DeskpetChat {
     this.persistFileSync(this.timerPath, this.timerContent(), 'timers')
   }
 
+  /** 把当前计时状态推给 Python，用于标题栏实时倒计时。 */
+  sendTimerChanged() {
+    if (this.disposed) return
+    const now = this.now()
+    this.write({
+      type: 'chat/timer',
+      event: 'changed',
+      timers: [...this.timers]
+        .sort((left, right) => left.dueAt - right.dueAt || left.id - right.id)
+        .map((timer) => ({
+          id: timer.id,
+          kind: timer.kind,
+          label: timer.label,
+          remainingMs: Math.max(0, timer.dueAt - now),
+        })),
+    })
+  }
+
   parseTimerCommand(text) {
     const value = (text || '').trim()
     if (value === '') return null
-    if (/^(?:查看计时|计时列表|提醒列表)$/u.test(value)) return { action: 'list' }
-    if (/^取消所有计时$/u.test(value)) return { action: 'cancel-all' }
-    let match = value.match(/^取消(?:计时)?\s*#?(\d+)$/u)
+    // 常见自然说法归一化成「数字 + 单位」再解析。
+    const normalized = value
+      .replace(/半个小时|半小时/gu, '30 分钟')
+      .replace(/一刻钟/gu, '15 分钟')
+      .replace(/一个小时|一小时/gu, '1 小时')
+    if (/^(?:查看计时|计时列表|提醒列表)$/u.test(normalized)) return { action: 'list' }
+    if (/^取消所有计时$/u.test(normalized)) return { action: 'cancel-all' }
+    let match = normalized.match(/^取消(?:计时)?\s*#?(\d+)$/u)
     if (match) return { action: 'cancel', id: Number(match[1]) }
-    match = value.match(/^(?:倒计时|计时)\s*(\d+)\s*(秒钟|秒|分钟|分|小时|钟头|min|m|s|h)\s*$/iu)
+    match = normalized.match(/^(?:倒计时|计时)\s*(\d+)\s*(秒钟|秒|分钟|分|小时|钟头|min|m|s|h)\s*$/iu)
     if (match) {
       const durationMs = durationToMs(match[1], match[2])
       if (durationMs !== null) {
         return { action: 'create', kind: 'countdown', durationMs, label: '' }
       }
     }
-    match = value.match(/^(?:提醒我\s*)?(\d+)\s*(秒钟|秒|分钟|分|小时|钟头|min|m|s|h)\s*后\s*(?:提醒我|提醒)?\s*(.*)$/iu)
+    match = normalized.match(/^(?:提醒我\s*)?(\d+)\s*(秒钟|秒|分钟|分|小时|钟头|min|m|s|h)\s*后\s*(?:提醒我|提醒)?\s*(.*)$/iu)
     if (match) {
       const durationMs = durationToMs(match[1], match[2])
       if (durationMs !== null) {
         return { action: 'create', kind: 'reminder', durationMs, label: (match[3] ?? '').trim() }
       }
     }
-    if (TIMER_ACTION_PREFIX.test(value)) return { action: 'invalid' }
+    if (TIMER_ACTION_PREFIX.test(normalized)) return { action: 'invalid' }
     return null
   }
 
@@ -1161,6 +1190,7 @@ export class DeskpetChat {
       const count = this.timers.length
       this.timers = []
       this.persistTimersSync()
+      this.sendTimerChanged()
       return `已取消全部 ${count} 个计时。`
     }
     if (command.action === 'cancel') {
@@ -1168,6 +1198,7 @@ export class DeskpetChat {
       if (target === undefined) return `没有找到计时 #${command.id}，可用「查看计时」确认。`
       this.timers = this.timers.filter(timer => timer.id !== command.id)
       this.persistTimersSync()
+      this.sendTimerChanged()
       return `已取消计时 #${command.id}。`
     }
     if (command.action === 'create') {
@@ -1187,6 +1218,7 @@ export class DeskpetChat {
       }
       this.timers.push(timer)
       this.persistTimersSync()
+      this.sendTimerChanged()
       const duration = formatDuration(command.durationMs)
       if (command.kind === 'countdown') {
         return `好，开始计时 ${duration}（#${id}）。到点我会提醒你。`
@@ -1205,21 +1237,25 @@ export class DeskpetChat {
     const due = this.timers
       .filter(timer => timer.dueAt <= now)
       .sort((left, right) => left.dueAt - right.dueAt || left.id - right.id)
-    if (due.length === 0) return 0
-    const dueIds = new Set(due.map(timer => timer.id))
-    this.timers = this.timers.filter(timer => !dueIds.has(timer.id))
-    this.persistTimersSync()
-    for (const timer of due) {
-      this.write({
-        type: 'chat/timer',
-        event: 'fired',
-        id: timer.id,
-        kind: timer.kind,
-        label: timer.label,
-        text: timerFireText(timer),
-        dueAt: timer.dueAt,
-      })
+    if (due.length > 0) {
+      const dueIds = new Set(due.map(timer => timer.id))
+      this.timers = this.timers.filter(timer => !dueIds.has(timer.id))
+      this.persistTimersSync()
+      for (const timer of due) {
+        this.write({
+          type: 'chat/timer',
+          event: 'fired',
+          id: timer.id,
+          kind: timer.kind,
+          label: timer.label,
+          text: timerFireText(timer),
+          dueAt: timer.dueAt,
+          sound: this.options.chatTimerSound !== false,
+        })
+      }
     }
+    // 有进行中的计时就每秒刷新倒计时；最后一个触发后也推一次空列表。
+    if (this.timers.length > 0 || due.length > 0) this.sendTimerChanged()
     return due.length
   }
 

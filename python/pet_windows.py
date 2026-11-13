@@ -178,6 +178,7 @@ class ChatDialog(QDialog):
         self._messages: list[tuple[str, str]] = []
         self._last_date: str | None = None
         self._memory_count = 0
+        self._timers: list[float] = []
         self._memory_dialog: MemoryDialog | None = None
         self._status_base = ""
         self._status_dots = 0
@@ -393,10 +394,37 @@ class ChatDialog(QDialog):
     def set_memory_count(self, count: int) -> None:
         """更新标题栏提示：桌宠已经记住了多少件事。"""
         self._memory_count = max(0, count)
-        if count > 0:
-            self._hint.setText(f"模型回复 · 已记住 {count} 件事")
-        else:
-            self._hint.setText("直接用 DSH 配置的模型回复")
+        self._update_hint()
+
+    def set_timers(self, timers: object) -> None:
+        """更新标题栏的实时倒计时（由 Host 每秒推送）。"""
+        remaining: list[float] = []
+        if isinstance(timers, list):
+            for item in timers:
+                if not isinstance(item, dict):
+                    continue
+                value = item.get("remainingMs")
+                if isinstance(value, (int, float)) and value >= 0:
+                    remaining.append(float(value))
+        self._timers = remaining
+        self._update_hint()
+
+    def _update_hint(self) -> None:
+        parts: list[str] = []
+        if self._timers:
+            parts.append(f"⏳ {len(self._timers)} 个计时 · {self._format_remaining(min(self._timers))}")
+        if self._memory_count > 0:
+            parts.append(f"已记住 {self._memory_count} 件事")
+        self._hint.setText(" · ".join(parts) if parts else "直接用 DSH 配置的模型回复")
+
+    @staticmethod
+    def _format_remaining(remaining_ms: float) -> str:
+        seconds = int(round(remaining_ms / 1000))
+        if seconds >= 3600:
+            return f"{seconds // 3600}小时{(seconds % 3600) // 60}分"
+        if seconds >= 60:
+            return f"{seconds // 60}分{seconds % 60}秒"
+        return f"{seconds}秒"
 
     def open_memory(self) -> None:
         if self._memory_dialog is None:
@@ -899,9 +927,15 @@ class PetWindow(QWidget):
     def memory_error(self, text: object, request_id=None) -> None:
         self._ensure_chat().memory_error(str(text or "记忆操作失败"), request_id)
 
-    def show_timer_reminder(self, text: object, kind: str = "countdown") -> None:
-        """计时/提醒到点：桌宠气泡 + 对话框消息。"""
+    def set_timers(self, timers: object) -> None:
+        """把进行中的计时同步给对话框（标题栏倒计时）。"""
+        self._ensure_chat().set_timers(timers)
+
+    def show_timer_reminder(self, text: object, kind: str = "countdown", sound: bool = False) -> None:
+        """计时/提醒到点：桌宠气泡 + 对话框消息（可选提示音）。"""
         label = str(text or "时间到了")
+        if sound:
+            QApplication.beep()
         self.set_status(f"⏰ {label}", "done")
         if self._chat is not None:
             self._chat.append_notice(f"⏰ {label}", "pet")

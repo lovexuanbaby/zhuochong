@@ -163,6 +163,12 @@ def main() -> int:
     window.show_timer_reminder("提醒：喝水")
     checks.append(("计时提醒显示在对话窗", dialog.messages[-1] == ("pet", "⏰ 提醒：喝水")))
 
+    # 标题栏实时倒计时（Host 每秒推送 changed）。
+    window.set_timers([{"id": 1, "kind": "countdown", "remainingMs": 61_000}])
+    checks.append(("计时倒计时显示在标题栏", "⏳" in dialog._hint.text() and "1分1秒" in dialog._hint.text()))
+    window.set_timers([])
+    checks.append(("计时结束后标题栏恢复", "DSH 配置的模型" in dialog._hint.text()))
+
     # 记忆管理：列表可加载，删除入口携带稳定 index；不改变聊天气泡。
     memory_requests: list[object] = []
     delete_requests: list[object] = []

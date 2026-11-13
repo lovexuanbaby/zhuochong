@@ -203,8 +203,11 @@ def main() -> int:
                     window.show_timer_reminder(
                         message.get("text") or "时间到了",
                         message.get("kind") or "countdown",
+                        bool(message.get("sound", False)),
                     )
                     log(f"timer fired: {message.get('text')}")
+                elif message.get("event") == "changed":
+                    window.set_timers(message.get("timers"))
 
             elif message_type == "chat/accepted":
                 pending_chats.discard(message_id)
