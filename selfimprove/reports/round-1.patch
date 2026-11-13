@@ -1,0 +1,89 @@
+diff --git a/index.js b/index.js
+index 5fcf076..cdb6add 100644
+--- a/index.js
++++ b/index.js
+@@ -527,20 +527,38 @@ function isHistoryEntry(entry) {
+     && typeof entry.text === 'string' && entry.text.trim() !== ''
+ }
+ 
++/** 记忆文本归一化：必须单行，避免换行/控制字符注入系统提示。 */
++function sanitizeFactText(text) {
++  return text
++    .normalize('NFKC')
++    .replace(/[\u0000-\u001f\u007f]/gu, ' ')
++    .replace(/\s+/gu, ' ')
++    .trim()
++}
++
+ /** 长期记忆整理器的系统提示：把聊天提炼成“用户画像”。 */
+-function memoryExtractionPrompt(existingFacts, maxFacts) {
++function memoryExtractionPrompt(existingFacts, maxFacts, forgottenCount = 0) {
+   const existing = existingFacts.length === 0
+     ? '（暂无）'
+     : existingFacts.map((fact) => `- [${fact.kind}] ${fact.text}`).join('\n')
+-  return [
+-    '你是桌宠的长期记忆整理器：从用户的聊天里提炼值得长期记住的信息，形成一份稳定的“用户画像”。',
+-    '规则：',
++  const rules = [
+     '1. 只保留对长期陪伴有价值的信息：用户称呼、偏好、习惯、目标、重要事实、忌讳、情绪倾向。',
+     '2. 合并重复或相近的条目；新信息覆盖旧信息；不确定的不要写；不要编造。',
+     `3. 每条不超过 40 个字；总数不超过 ${maxFacts} 条；按重要性排序。`,
+     '4. 只输出一个 JSON 数组，元素形如 {"kind":"preference","text":"..."}；',
+     '   kind 只能是 preference / habit / goal / fact / relation。',
+     '5. 不要输出任何其他文字、解释或代码块标记。',
++  ]
++  if (forgottenCount > 0) {
++    rules.push(
++      `6. 用户已删除 ${forgottenCount} 条记忆：不要恢复、不要重新添加已删除的内容，`
++      + '只根据最近对话与已有记忆整理。',
++    )
++  }
++  return [
++    '你是桌宠的长期记忆整理器：从用户的聊天里提炼值得长期记住的信息，形成一份稳定的“用户画像”。',
++    '规则：',
++    ...rules,
+     '',
+     '已有记忆：',
+     existing,
+@@ -564,7 +582,7 @@ function parseMemoryFacts(text, maxFacts) {
+   const seen = new Set()
+   for (const item of parsed) {
+     if (item === null || typeof item !== 'object') continue
+-    const value = typeof item.text === 'string' ? item.text.trim() : ''
++    const value = typeof item.text === 'string' ? sanitizeFactText(item.text) : ''
+     if (value === '' || value.length > 80) continue
+     if (seen.has(value)) continue
+     seen.add(value)
+@@ -576,7 +594,7 @@ function parseMemoryFacts(text, maxFacts) {
+ }
+ 
+ function memoryFactId(fact) {
+-  return createHash('sha256').update(fact.text.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase()).digest('hex')
++  return createHash('sha256').update(sanitizeFactText(fact.text).toLowerCase()).digest('hex')
+ }
+ 
+ export class DeskpetChat {
+@@ -737,8 +755,9 @@ export class DeskpetChat {
+           && typeof fact.text === 'string' && fact.text.trim() !== '')
+         .map((fact) => ({
+           kind: MEMORY_KINDS.has(fact.kind) ? fact.kind : 'fact',
+-          text: fact.text.trim(),
++          text: sanitizeFactText(fact.text),
+         }))
++        .filter(fact => fact.text !== '')
+         .filter(fact => !this.forgottenFactHashes.has(memoryFactId(fact)))
+         .slice(-this.options.chatMemoryMaxFacts)
+     } catch (error) {
+@@ -926,7 +945,11 @@ export class DeskpetChat {
+         provider: selection.provider,
+         model: selection.model,
+         messages: [textMessage('user', `最近对话：\n${transcript}`)],
+-        system: memoryExtractionPrompt(this.memoryFacts, this.options.chatMemoryMaxFacts),
++        system: memoryExtractionPrompt(
++          this.memoryFacts,
++          this.options.chatMemoryMaxFacts,
++          this.forgottenFactHashes.size,
++        ),
+         maxTokens: 512,
+         signal: abort.signal,
+       }
