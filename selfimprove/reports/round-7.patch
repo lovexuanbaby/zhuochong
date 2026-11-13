@@ -1,0 +1,99 @@
+diff --git a/config.js b/config.js
+index 48658aa..dc0a39a 100644
+--- a/config.js
++++ b/config.js
+@@ -34,4 +34,5 @@ export const Config = Schema.object({
+   chatEventUpdateEveryTurns: integer(4).description('每多少轮聊天整理一次事件记忆'),
+   chatEventMaxEvents: integer(50).description('最多保留的事件记忆条数'),
+   chatEventPath: Schema.string().description('可选：事件记忆文件路径；留空使用 DSH 数据目录。'),
++  chatProactiveLevel: Schema.string().default('quiet').description('主动关心档位：quiet（最低打扰）/ balanced（含早安）/ chatty（含午间问候）。'),
+ })
+diff --git a/index.js b/index.js
+index cf7b3a3..cc9f118 100644
+--- a/index.js
++++ b/index.js
+@@ -270,6 +270,13 @@ export function normalizeConfig(raw) {
+     throw new TypeError('deskpet config: chatEventsEnabled must be a boolean when set')
+   }
+ 
++  const chatProactiveLevel = config.chatProactiveLevel
++  if (chatProactiveLevel !== undefined
++    && (typeof chatProactiveLevel !== 'string'
++      || !['quiet', 'balanced', 'chatty'].includes(chatProactiveLevel))) {
++    throw new TypeError('deskpet config: chatProactiveLevel must be quiet, balanced or chatty')
++  }
++
+   return {
+     pythonPath: pythonPath.trim(),
+     pingIntervalMs: positiveInteger(config.pingIntervalMs, 15_000, 'pingIntervalMs', 1_000),
+@@ -309,6 +316,8 @@ export function normalizeConfig(raw) {
+     chatEventUpdateEveryTurns: positiveInteger(config.chatEventUpdateEveryTurns, 4, 'chatEventUpdateEveryTurns', 1),
+     chatEventMaxEvents: positiveInteger(config.chatEventMaxEvents, 50, 'chatEventMaxEvents', 1),
+     chatEventPath: typeof chatEventPath === 'string' ? chatEventPath.trim() : undefined,
++    // 主动关心的档位：quiet（默认，最低打扰）/ balanced / chatty。
++    chatProactiveLevel: chatProactiveLevel ?? 'quiet',
+     chatTimeoutMs: positiveInteger(config.chatTimeoutMs, 180_000, 'chatTimeoutMs', 1_000),
+   }
+ }
+@@ -895,6 +904,7 @@ export class DeskpetChat {
+       lastProactiveAt: 0,
+       lastProactiveDay: '',
+       emotion: { valence: 0, energy: 0.5, updatedAt: 0, recent: [] },
++      activeHours: Array.from({ length: 24 }, () => 0),
+     }
+     this.companionPath = options.chatCompanionPath ?? defaultCompanionPath()
+     this.companionLoad = null
+@@ -1533,6 +1543,9 @@ export class DeskpetChat {
+         lastInteractAt: safe(parsed?.lastInteractAt),
+         lastProactiveAt: safe(parsed?.lastProactiveAt),
+         lastProactiveDay: typeof parsed?.lastProactiveDay === 'string' ? parsed.lastProactiveDay : '',
++        activeHours: Array.isArray(parsed?.activeHours) && parsed.activeHours.length === 24
++          ? parsed.activeHours.map((value) => (Number.isSafeInteger(value) && value >= 0 ? value : 0))
++          : Array.from({ length: 24 }, () => 0),
+         emotion: {
+           valence: clamp(rawEmotion?.valence, -1, 1),
+           energy: clamp(rawEmotion?.energy, 0, 1, 0.5),
+@@ -1747,7 +1760,7 @@ export class DeskpetChat {
+     return Math.max(0, Math.floor((this.now() - this.companion.firstSeenAt) / 86_400_000))
+   }
+ 
+-  /** 低打扰主动关心：深夜轻声提醒、白天很久没说话时问候；每天最多一次。 */
++  /** 低打扰主动关心：按档位与学到的作息，深夜/早安/午后/沉默时轻声问候；每天最多一次。 */
+   tickProactive() {
+     if (this.disposed || !this.options.chatProactiveEnabled || !this.companionLoaded) return null
+     const now = this.now()
+@@ -1755,14 +1768,24 @@ export class DeskpetChat {
+     const dayKey = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`
+     if (this.companion.lastProactiveDay === dayKey) return null
+     const hour = date.getHours()
++    const level = this.options.chatProactiveLevel ?? 'quiet'
+     const silentFor = this.companion.lastInteractAt > 0
+       ? now - this.companion.lastInteractAt
+       : Number.POSITIVE_INFINITY
++    const morningHabit = this.companion.activeHours.slice(6, 11).reduce((sum, value) => sum + value, 0) >= 3
++    const anyHabit = this.companion.activeHours.reduce((sum, value) => sum + value, 0) >= 3
+     let kind = null
+     let text = null
+-    if (hour >= 22 && silentFor <= 6 * 3_600_000) {
++    if ((hour >= 22 || hour <= 2) && silentFor <= 8 * 3_600_000) {
+       kind = 'night'
+       text = '夜深了，我把灯光调暗了一点。早点休息，我在这儿。'
++    } else if (level !== 'quiet' && hour >= 8 && hour <= 10
++      && silentFor >= 8 * 3_600_000 && (!anyHabit || morningHabit)) {
++      kind = 'morning'
++      text = '早呀。今天也慢慢来，不用急。'
++    } else if (level === 'chatty' && hour >= 12 && hour <= 13 && silentFor >= 4 * 3_600_000) {
++      kind = 'noon'
++      text = '中午了，记得吃点东西。'
+     } else if (hour >= 10 && hour <= 21 && silentFor >= 4 * 3_600_000) {
+       kind = 'silence'
+       text = '好久没听到你的声音了。想聊的时候，我一直在。'
+@@ -1967,6 +1990,8 @@ export class DeskpetChat {
+       void this.persistHistory()
+       this.companion.turns += 1
+       this.companion.lastInteractAt = this.now()
++      const activeHour = new Date(this.now()).getHours()
++      this.companion.activeHours[activeHour] += 1
+       this.persistCompanionSync()
+       if (this.options.chatEmotionEnabled) {
+         const emotion = this.companion.emotion
