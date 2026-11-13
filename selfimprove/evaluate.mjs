@@ -18,6 +18,7 @@ import { timerScenarios } from './scenarios/timer.mjs'
 import { companionScenarios } from './scenarios/companion.mjs'
 import { emotionScenarios } from './scenarios/emotion.mjs'
 import { eventScenarios } from './scenarios/events.mjs'
+import { proactiveScenarios } from './scenarios/proactive.mjs'
 
 const scenarios = [
   ...memoryScenarios.map((scenario) => ({ ...scenario, group: 'memory' })),
@@ -25,6 +26,7 @@ const scenarios = [
   ...companionScenarios.map((scenario) => ({ ...scenario, group: 'companion' })),
   ...emotionScenarios.map((scenario) => ({ ...scenario, group: 'emotion' })),
   ...eventScenarios.map((scenario) => ({ ...scenario, group: 'events' })),
+  ...proactiveScenarios.map((scenario) => ({ ...scenario, group: 'proactive' })),
 ]
 
 const HERE = dirname(fileURLToPath(import.meta.url))

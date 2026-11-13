@@ -105,6 +105,7 @@ export const BASE_OPTIONS = {
   chatTimerMaxActive: 20,
   chatTimerPath: undefined,
   chatProactiveEnabled: true,
+  chatProactiveLevel: 'quiet',
   chatCompanionPath: undefined,
   chatEmotionEnabled: true,
   chatEventsEnabled: true,
