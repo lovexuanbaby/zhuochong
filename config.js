@@ -30,4 +30,8 @@ export const Config = Schema.object({
   chatProactiveEnabled: Schema.boolean().default(true).description('低打扰主动关心：深夜轻声提醒、很久没说话时问候（每天最多一次）。'),
   chatCompanionPath: Schema.string().description('可选：陪伴关系数据文件路径；留空使用 DSH 数据目录。'),
   chatEmotionEnabled: Schema.boolean().default(true).description('启用情绪状态层：记录心情/精力并影响回复与气泡。'),
+  chatEventsEnabled: Schema.boolean().default(true).description('启用事件记忆：记住具体发生过的事并按相关度召回。'),
+  chatEventUpdateEveryTurns: integer(4).description('每多少轮聊天整理一次事件记忆'),
+  chatEventMaxEvents: integer(50).description('最多保留的事件记忆条数'),
+  chatEventPath: Schema.string().description('可选：事件记忆文件路径；留空使用 DSH 数据目录。'),
 })

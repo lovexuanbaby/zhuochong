@@ -25,18 +25,25 @@ export function makeHarness({
   replyText = '好的',
   replyFails = false,
   memoryReplies = [],
+  eventReplies = [],
 } = {}) {
   const sent = []
   const requests = []
   const warns = []
   const memoryRepliesLeft = [...memoryReplies]
+  const eventRepliesLeft = [...eventReplies]
 
   const llm = {
     async *stream(request) {
       requests.push(request)
-      const isMemoryCall = typeof request.system === 'string' && request.system.includes(MEMORY_MARKER)
-      if (isMemoryCall) {
+      const system = typeof request.system === 'string' ? request.system : ''
+      if (system.includes(MEMORY_MARKER)) {
         const text = memoryRepliesLeft.length > 0 ? memoryRepliesLeft.shift() : '[]'
+        yield* textChunks(text)
+        return
+      }
+      if (system.includes('事件记忆整理器')) {
+        const text = eventRepliesLeft.length > 0 ? eventRepliesLeft.shift() : '[]'
         yield* textChunks(text)
         return
       }
@@ -100,6 +107,10 @@ export const BASE_OPTIONS = {
   chatProactiveEnabled: true,
   chatCompanionPath: undefined,
   chatEmotionEnabled: true,
+  chatEventsEnabled: true,
+  chatEventUpdateEveryTurns: 2,
+  chatEventMaxEvents: 50,
+  chatEventPath: undefined,
   chatTimeoutMs: 5_000,
 }
 
@@ -112,6 +123,7 @@ export function createEnv({ harness: harnessOptions = {}, chat: chatOptions = {}
     chatMemoryPath: join(dir, 'user-memory.json'),
     chatTimerPath: join(dir, 'timers.json'),
     chatCompanionPath: join(dir, 'companion.json'),
+    chatEventPath: join(dir, 'events.json'),
   }
   const chat = new DeskpetChat(harness.ctx, harness.bridge, {
     ...BASE_OPTIONS,
@@ -126,6 +138,7 @@ export function createEnv({ harness: harnessOptions = {}, chat: chatOptions = {}
     memoryPath: pathOptions.chatMemoryPath,
     timerPath: pathOptions.chatTimerPath,
     companionPath: pathOptions.chatCompanionPath,
+    eventPath: pathOptions.chatEventPath,
   }
 }
 

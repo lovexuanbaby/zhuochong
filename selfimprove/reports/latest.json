@@ -2,9 +2,9 @@
   "tool": "deskpet-selfimprove-evaluate",
   "version": 1,
   "mode": "deterministic-mock-llm",
-  "startedAt": "2026-11-13T17:42:55.750Z",
-  "scenarios": 49,
-  "passed": 49,
+  "startedAt": "2026-11-13T18:00:07.332Z",
+  "scenarios": 59,
+  "passed": 59,
   "failed": 0,
   "score": 100,
   "checks": [
@@ -13,7 +13,7 @@
       "title": "记忆整理请求结构正确",
       "weight": 2,
       "ok": true,
-      "durationMs": 10
+      "durationMs": 14
     },
     {
       "id": "parse-plain",
@@ -27,42 +27,42 @@
       "title": "解析代码块包裹的 JSON",
       "weight": 1,
       "ok": true,
-      "durationMs": 6
+      "durationMs": 10
     },
     {
       "id": "parse-prose",
       "title": "解析前后带说明文字的 JSON",
       "weight": 1,
       "ok": true,
-      "durationMs": 7
+      "durationMs": 9
     },
     {
       "id": "parse-invalid-keeps-old",
       "title": "非法输出保留旧记忆",
       "weight": 2,
       "ok": true,
-      "durationMs": 12
+      "durationMs": 10
     },
     {
       "id": "dedupe-cap",
       "title": "去重并遵守条数上限",
       "weight": 1,
       "ok": true,
-      "durationMs": 5
+      "durationMs": 8
     },
     {
       "id": "kind-normalize",
       "title": "未知类型降级且超长文本被丢弃",
       "weight": 1,
       "ok": true,
-      "durationMs": 8
+      "durationMs": 9
     },
     {
       "id": "forgotten-filter",
       "title": "已删除记忆不会被重新保存",
       "weight": 2,
       "ok": true,
-      "durationMs": 12
+      "durationMs": 14
     },
     {
       "id": "delete-flow",
@@ -76,7 +76,7 @@
       "title": "记忆注入系统提示，关闭时不注入",
       "weight": 2,
       "ok": true,
-      "durationMs": 10
+      "durationMs": 13
     },
     {
       "id": "corrupt-quarantine",
@@ -97,14 +97,14 @@
       "title": "记忆文本不得包含换行/控制字符（防提示注入）",
       "weight": 2,
       "ok": true,
-      "durationMs": 7
+      "durationMs": 8
     },
     {
       "id": "forgotten-guard-prompt",
       "title": "整理提示词提醒不要恢复已删除记忆",
       "weight": 2,
       "ok": true,
-      "durationMs": 8
+      "durationMs": 9
     },
     {
       "id": "timer-create-countdown",
@@ -139,14 +139,14 @@
       "title": "并发计时互不干扰",
       "weight": 2,
       "ok": true,
-      "durationMs": 5
+      "durationMs": 6
     },
     {
       "id": "timer-list-cancel",
       "title": "查看、取消单个与取消全部",
       "weight": 2,
       "ok": true,
-      "durationMs": 5
+      "durationMs": 7
     },
     {
       "id": "timer-invalid",
@@ -160,7 +160,7 @@
       "title": "计时落盘并在重启后恢复",
       "weight": 2,
       "ok": true,
-      "durationMs": 11
+      "durationMs": 10
     },
     {
       "id": "timer-overdue-catchup",
@@ -174,7 +174,7 @@
       "title": "损坏的计时文件被隔离",
       "weight": 1,
       "ok": true,
-      "durationMs": 4
+      "durationMs": 3
     },
     {
       "id": "timer-max-active",
@@ -188,7 +188,7 @@
       "title": "自然说法：半小时/一刻钟/一小时",
       "weight": 2,
       "ok": true,
-      "durationMs": 5
+      "durationMs": 3
     },
     {
       "id": "timer-changed-protocol",
@@ -209,63 +209,63 @@
       "title": "到点消息携带提示音开关（安静型默认静音）",
       "weight": 1,
       "ok": true,
-      "durationMs": 5
+      "durationMs": 6
     },
     {
       "id": "companion-persona-default",
       "title": "默认人格是安静温柔型",
       "weight": 2,
       "ok": true,
-      "durationMs": 5
+      "durationMs": 4
     },
     {
       "id": "companion-persona-custom",
       "title": "自定义人格覆盖默认设定",
       "weight": 1,
       "ok": true,
-      "durationMs": 4
+      "durationMs": 3
     },
     {
       "id": "companion-relationship-context",
       "title": "关系感注入（认识天数/聊天轮数）",
       "weight": 2,
       "ok": true,
-      "durationMs": 4
+      "durationMs": 5
     },
     {
       "id": "companion-relationship-persist",
       "title": "关系数据随对话落盘并可重启恢复",
       "weight": 2,
       "ok": true,
-      "durationMs": 11
+      "durationMs": 12
     },
     {
       "id": "companion-mood-tired",
       "title": "识别疲惫情绪并注入回应提示",
       "weight": 2,
       "ok": true,
-      "durationMs": 5
+      "durationMs": 7
     },
     {
       "id": "companion-mood-none",
       "title": "普通聊天不注入情绪提示",
       "weight": 1,
       "ok": true,
-      "durationMs": 4
+      "durationMs": 5
     },
     {
       "id": "companion-proactive-night",
       "title": "深夜只轻声提醒一次",
       "weight": 2,
       "ok": true,
-      "durationMs": 9
+      "durationMs": 10
     },
     {
       "id": "companion-proactive-silence",
       "title": "白天很久没说话时轻轻问候",
       "weight": 2,
       "ok": true,
-      "durationMs": 3
+      "durationMs": 10
     },
     {
       "id": "companion-proactive-avoid-annoying",
@@ -279,14 +279,14 @@
       "title": "关闭主动关心后不再打扰",
       "weight": 1,
       "ok": true,
-      "durationMs": 2
+      "durationMs": 3
     },
     {
       "id": "companion-corrupt-quarantine",
       "title": "损坏的关系数据被隔离",
       "weight": 1,
       "ok": true,
-      "durationMs": 11
+      "durationMs": 13
     },
     {
       "id": "emotion-init-state",
@@ -300,7 +300,7 @@
       "title": "疲惫会拉低心情与精力",
       "weight": 2,
       "ok": true,
-      "durationMs": 8
+      "durationMs": 11
     },
     {
       "id": "emotion-happy-raises",
@@ -314,7 +314,7 @@
       "title": "否定句不误判情绪",
       "weight": 2,
       "ok": true,
-      "durationMs": 9
+      "durationMs": 10
     },
     {
       "id": "emotion-decay",
@@ -328,14 +328,14 @@
       "title": "桌宠状态与用户情绪进入系统提示",
       "weight": 2,
       "ok": true,
-      "durationMs": 5
+      "durationMs": 4
     },
     {
       "id": "emotion-persist-restart",
       "title": "情绪状态跨重启恢复",
       "weight": 2,
       "ok": true,
-      "durationMs": 10
+      "durationMs": 11
     },
     {
       "id": "emotion-disabled",
@@ -349,7 +349,77 @@
       "title": "最近情绪记录有上限",
       "weight": 1,
       "ok": true,
-      "durationMs": 17
+      "durationMs": 21
+    },
+    {
+      "id": "events-request-shape",
+      "title": "事件整理请求结构正确",
+      "weight": 2,
+      "ok": true,
+      "durationMs": 12
+    },
+    {
+      "id": "events-parse",
+      "title": "解析事件 JSON 并归一字段",
+      "weight": 2,
+      "ok": true,
+      "durationMs": 9
+    },
+    {
+      "id": "events-fenced-json",
+      "title": "解析代码块包裹的事件 JSON",
+      "weight": 1,
+      "ok": true,
+      "durationMs": 9
+    },
+    {
+      "id": "events-max-cap",
+      "title": "事件条数有上限",
+      "weight": 1,
+      "ok": true,
+      "durationMs": 8
+    },
+    {
+      "id": "events-invalid-keeps-old",
+      "title": "非法输出保留旧事件",
+      "weight": 2,
+      "ok": true,
+      "durationMs": 9
+    },
+    {
+      "id": "events-recall",
+      "title": "按相关度召回事件并注入提示",
+      "weight": 2,
+      "ok": true,
+      "durationMs": 4
+    },
+    {
+      "id": "events-recall-none",
+      "title": "无相关事件时不注入",
+      "weight": 1,
+      "ok": true,
+      "durationMs": 5
+    },
+    {
+      "id": "events-persist-restart",
+      "title": "事件落盘并可重启恢复",
+      "weight": 2,
+      "ok": true,
+      "durationMs": 23
+    },
+    {
+      "id": "events-corrupt-quarantine",
+      "title": "损坏的事件文件被隔离",
+      "weight": 1,
+      "ok": true,
+      "durationMs": 9
+    },
+    {
+      "id": "events-disabled",
+      "title": "关闭事件记忆后不整理不注入",
+      "weight": 1,
+      "ok": true,
+      "durationMs": 14
     }
   ]
 }
