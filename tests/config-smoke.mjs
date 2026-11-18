@@ -25,7 +25,11 @@ check('invalid timing, fractional limits and boolean strings are rejected', () =
 check('blank optional text resets to defaults and model overrides stay paired', () => {
   assert.equal(normalizeConfig({chatModel: '', chatProvider: ''}).chatModel, undefined)
   assert.equal(normalizeConfig({chatSystemPrompt: ' ', chatMemoryPath: ''}).chatMemoryPath, undefined)
+  assert.equal(normalizeConfig({chatEventPath: ''}).chatEventPath, undefined)
+  assert.equal(normalizeConfig({chatProactiveLevel: ''}).chatProactiveLevel, 'quiet')
   assert.throws(() => normalizeConfig({chatProvider: 'one'}))
+  assert.throws(() => normalizeConfig({chatProactiveLevel: 'loud'}))
+  assert.throws(() => Config({chatProactiveLevel: 'loud'}))
 })
 
 const home = join('C:', 'fixture-home')

@@ -188,7 +188,7 @@ export function normalizeConfig(raw) {
   }
 
   config = { ...config }
-  for (const field of ['chatProvider', 'chatModel', 'chatSystemPrompt', 'chatHistoryPath', 'chatMemoryPath', 'chatTimerPath', 'chatCompanionPath']) {
+  for (const field of ['chatProvider', 'chatModel', 'chatSystemPrompt', 'chatHistoryPath', 'chatMemoryPath', 'chatTimerPath', 'chatCompanionPath', 'chatEventPath', 'chatProactiveLevel']) {
     if (typeof config[field] === 'string' && config[field].trim() === '') delete config[field]
   }
   const pythonPath = resolvePythonPath(config.pythonPath)
@@ -811,7 +811,7 @@ const TIMER_UNITS = [
   ['分钟', 60_000], ['分', 60_000], ['min', 60_000], ['m', 60_000],
   ['秒钟', 1_000], ['秒', 1_000], ['s', 1_000],
 ]
-const TIMER_ACTION_PREFIX = /^(?:倒计时|计时|提醒我|查看计时|计时列表|提醒列表|取消)/u
+const TIMER_INTENT_PREFIX = /^(?:倒计时|计时)/u
 
 function durationToMs(count, unit) {
   const label = String(unit).toLowerCase()
@@ -884,6 +884,7 @@ export class DeskpetChat {
     this.forgottenFactHashes = new Set()
     this.forgottenAfter = 0
     this.loaded = false
+    this.historyLoad = null
     this.memoryLoaded = false
     this.historyDirty = false
     this.memoryDirty = false
@@ -927,7 +928,11 @@ export class DeskpetChat {
   // ---------------------------------------------------------------- 历史
 
   async loadHistory() {
-    this.loaded = true
+    this.historyLoad ??= this.readHistory().finally(() => { this.loaded = true })
+    return this.historyLoad
+  }
+
+  async readHistory() {
     this.historyDirty = false
     let raw
     try {
@@ -993,9 +998,9 @@ export class DeskpetChat {
   }
 
   async persistHistory() {
-    const saved = await this.persistFile(this.historyPath, this.historyContent(), 'history')
-    if (saved) this.historyDirty = false
-    return saved
+    // History writes are intentionally synchronous so a rapid second turn
+    // cannot race an older async snapshot and overwrite newer messages.
+    return this.persistHistorySync()
   }
 
   persistHistorySync() {
@@ -1131,7 +1136,7 @@ export class DeskpetChat {
       renameSync(temp, path)
       return true
     } catch (error) {
-      this.ctx.logger.warn('deskpet %s save failed at shutdown: %s', label, error?.message ?? String(error))
+      this.ctx.logger.warn('deskpet %s save failed: %s', label, error?.message ?? String(error))
       return false
     }
   }
@@ -1399,7 +1404,7 @@ export class DeskpetChat {
         return { action: 'create', kind: 'reminder', durationMs, label: (match[3] ?? '').trim() }
       }
     }
-    if (TIMER_ACTION_PREFIX.test(normalized)) return { action: 'invalid' }
+    if (TIMER_INTENT_PREFIX.test(normalized)) return { action: 'invalid' }
     return null
   }
 
@@ -1767,6 +1772,9 @@ export class DeskpetChat {
     const date = new Date(now)
     const dayKey = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`
     if (this.companion.lastProactiveDay === dayKey) return null
+    // Do not greet a brand-new session before the user has ever chatted; the
+    // first proactive message should follow real interaction.
+    if (this.companion.lastInteractAt <= 0) return null
     const hour = date.getHours()
     const level = this.options.chatProactiveLevel ?? 'quiet'
     const silentFor = this.companion.lastInteractAt > 0
@@ -1835,8 +1843,10 @@ export class DeskpetChat {
       this.persistMemorySync()
     }
     if (this.pending !== null) {
-      clearTimeout(this.pending.timer)
-      this.pending.abort.abort(new Error('deskpet chat disposed'))
+      const pending = this.pending
+      clearTimeout(pending.timer)
+      pending.abort.abort(new Error('deskpet chat disposed'))
+      this.removePendingUserEntry(pending)
       this.pending = null
     }
   }
@@ -1851,6 +1861,14 @@ export class DeskpetChat {
 
   fail(chatId, message) {
     this.write({ type: 'chat/error', id: chatId, message })
+  }
+
+  removePendingUserEntry(pending) {
+    const entry = pending?.userEntry
+    if (!entry) return
+    const index = this.entries.lastIndexOf(entry)
+    if (index !== -1) this.entries.splice(index, 1)
+    pending.userEntry = null
   }
 
   service(name) {
@@ -1952,20 +1970,26 @@ export class DeskpetChat {
     }
     if (!this.loaded) {
       await this.loadHistory()
+    }
+    if (!this.memoryLoaded) {
       await this.loadMemory()
     }
 
-    const pending = { chatId, abort: new AbortController(), timer: null }
+    const pending = { chatId, abort: new AbortController(), timer: null, userEntry: null }
     pending.timer = setTimeout(() => {
       if (this.pending !== pending) return
       this.pending = null
       pending.abort.abort(new Error('deskpet chat timeout'))
-      this.fail(chatId, `等待模型回复超时（${Math.round(this.options.chatTimeoutMs / 1000)} 秒）`)
+      // A timed-out turn has no assistant reply; it must not remain in model
+      // context or be persisted as an orphan user message.
+      this.removePendingUserEntry(pending)
+      this.fail(chatId, `等待模型回复超时（${Math.max(1, Math.round(this.options.chatTimeoutMs / 1000))} 秒）`)
     }, this.options.chatTimeoutMs)
     pending.timer.unref?.()
     this.pending = pending
 
     const userEntry = { role: 'user', text, time: new Date().toISOString() }
+    pending.userEntry = userEntry
     this.entries.push(userEntry)
     this.write({ type: 'chat/accepted', id: chatId })
 
@@ -1979,6 +2003,7 @@ export class DeskpetChat {
         text: replyText,
         time: new Date().toISOString(),
       })
+      pending.userEntry = null
       this.trimEntries()
       this.historyDirty = true
       this.write({
@@ -2014,7 +2039,7 @@ export class DeskpetChat {
       clearTimeout(pending.timer)
       this.pending = null
       // 失败的一轮不进入上下文，避免下一条把半截对话带给模型。
-      if (this.entries[this.entries.length - 1] === userEntry) this.entries.pop()
+      this.removePendingUserEntry(pending)
       this.fail(chatId, `模型回复失败：${error?.message ?? String(error)}`)
     }
   }

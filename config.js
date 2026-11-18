@@ -34,5 +34,5 @@ export const Config = Schema.object({
   chatEventUpdateEveryTurns: integer(4).description('每多少轮聊天整理一次事件记忆'),
   chatEventMaxEvents: integer(50).description('最多保留的事件记忆条数'),
   chatEventPath: Schema.string().description('可选：事件记忆文件路径；留空使用 DSH 数据目录。'),
-  chatProactiveLevel: Schema.string().default('quiet').description('主动关心档位：quiet（最低打扰）/ balanced（含早安）/ chatty（含午间问候）。'),
+  chatProactiveLevel: Schema.union(['quiet', 'balanced', 'chatty']).default('quiet').description('主动关心档位：quiet（最低打扰）/ balanced（含早安）/ chatty（含午间问候）。'),
 })

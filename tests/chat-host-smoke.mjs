@@ -46,6 +46,9 @@ function makeHarness({
   const historyDir = mkdtempSync(join(tmpdir(), 'deskpet-chat-'))
   const historyPath = join(historyDir, 'chat-history.json')
   const memoryPath = join(historyDir, 'user-memory.json')
+  const timerPath = join(historyDir, 'timers.json')
+  const companionPath = join(historyDir, 'companion.json')
+  const eventPath = join(historyDir, 'events.json')
 
   const llm = {
     async *stream(request) {
@@ -81,7 +84,7 @@ function makeHarness({
       sent.push(message)
     },
   }
-  return { ctx, bridge, sent, requests, servicesRead, llm, historyDir, historyPath, memoryPath }
+  return { ctx, bridge, sent, requests, servicesRead, llm, historyDir, historyPath, memoryPath, timerPath, companionPath, eventPath }
 }
 
 function makeChat(harness, options = {}) {
@@ -98,6 +101,10 @@ function makeChat(harness, options = {}) {
     chatMemoryUpdateEveryTurns: 4,
     chatMemoryMaxFacts: 40,
     chatMemoryTranscriptMessages: 24,
+    chatTimerPath: harness.timerPath,
+    chatCompanionPath: harness.companionPath,
+    chatEventPath: harness.eventPath,
+    chatProactiveEnabled: false,
     chatTimeoutMs: 5_000,
     ...options,
   })
@@ -178,6 +185,10 @@ await check('缺少模型服务时报错', async () => {
     chatHistoryPath: harness.historyPath,
     chatMemoryEnabled: false,
     chatMemoryPath: harness.memoryPath,
+    chatTimerPath: harness.timerPath,
+    chatCompanionPath: harness.companionPath,
+    chatEventPath: harness.eventPath,
+    chatProactiveEnabled: false,
     chatTimeoutMs: 1_000,
   })
   await chat.handleChat({ id: 4, text: 'hi' })
@@ -219,6 +230,7 @@ await check('等待超时回显并中止', async () => {
   assert.ok(failure, 'must report timeout')
   assert.match(failure.message, /超时/)
   assert.equal(chat.pending, null)
+  assert.equal(chat.entries.length, 0, 'timed-out user message must not stay in context')
   chat.dispose()
   await running.catch(() => {})
 })
@@ -232,6 +244,7 @@ await check('停用清理与 abort', async () => {
   const signal = harness.requests[0].signal
   chat.dispose()
   assert.equal(signal.aborted, true, 'in-flight request must be aborted')
+  assert.equal(chat.entries.length, 0, 'disposed in-flight user message must not stay in context')
   await running.catch(() => {})
   await chat.handleChat({ id: 10, text: 'after dispose' })
   const failure = harness.sent.find((message) => message.type === 'chat/error' && message.id === 10)
@@ -594,6 +607,18 @@ await check('桥接路由保留记忆请求 id、事实 id 和版本', async () 
   const messages = [{type: 'memory/list', id: 3}, {type: 'memory/delete', id: 4, factId: 'stable', revision: 9}]
   for (const message of messages) bridge.onStdoutLine(JSON.stringify(message))
   assert.deepEqual(routed, messages)
+})
+
+await check('计时命令不过度拦截普通聊天，且首次互动前不主动问候', async () => {
+  const h = makeHarness()
+  const chat = makeChat(h, { chatTimerEnabled: true, chatProactiveEnabled: true })
+  assert.equal(chat.parseTimerCommand('提醒我明天开会'), null)
+  assert.equal(chat.parseTimerCommand('取消这次安排'), null)
+  assert.equal(chat.parseTimerCommand('计时 5 分钟')?.action, 'create')
+  assert.equal(chat.parseTimerCommand('提醒我 10 分钟后 喝水')?.kind, 'reminder')
+  chat.companionLoaded = true
+  assert.equal(chat.tickProactive(), null, 'no proactive greeting before the first chat')
+  chat.dispose()
 })
 
 const failed = results.filter((result) => !result.ok)

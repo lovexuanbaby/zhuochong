@@ -6,7 +6,7 @@ pet includes a small chat dialog whose replies use the DSH-configured model.
 Credentials stay owned by DSH: the plugin reads no key files and starts no
 second Harness.
 
-The current local installation candidate is **0.2.0-rc.1**. See
+The current local installation candidate is **0.2.1-rc.1**. See
 [`docs/INSTALL.md`](./docs/INSTALL.md) for setup, diagnostics, settings, and data
 handling. Release artifacts are produced by `npm run release:check`.
 
@@ -36,11 +36,11 @@ Verified against the Desktop runtime that loaded this plugin:
 
 | Item | Value |
 |---|---|
-| Desktop runtime package | `@deepseek-ai/dsh-desktop-runtime` **0.2.1-rc.5** |
-| Host framework | `@deepseek-ai/cordis` **4.0.5** |
+| Desktop runtime package | `@deepseek-ai/dsh-desktop-runtime` **0.2.2-rc.3** |
+| Host framework | `@deepseek-ai/cordis` **4.1.0** |
 | Node used by the runtime | **24.21.0** |
 | Python used in local verification | **3.14.6**, including a fresh isolated environment |
-| PySide6 | **6.12.0** |
+| PySide6 | **6.12.0** (Essentials) |
 
 The specific interfaces used were read from the installed runtime:
 
@@ -273,6 +273,18 @@ The active values are in [`cordis.patch.yml`](./cordis.patch.yml):
 | `chatMemoryPath` | `$DSH_HOME/deskpet/user-memory.json` | Where the long-term profile is stored |
 | `chatMaxTokens` | `1024` | Output-token cap per reply |
 | `chatTimeoutMs` | `180000` | How long the dialog waits for one model reply before reporting a timeout |
+| `chatTimerEnabled` | `true` | Enable chat commands such as `计时 5 分钟` and `10 分钟后提醒我 喝水` |
+| `chatTimerMaxActive` | `20` | Maximum concurrent timers/reminders |
+| `chatTimerPath` | `$DSH_HOME/deskpet/timers.json` | Timer/reminder persistence file |
+| `chatTimerSound` | `false` | Play a system beep when a timer fires |
+| `chatProactiveEnabled` | `true` | Low-disturbance proactive greetings (at most once per day) |
+| `chatProactiveLevel` | `quiet` | `quiet`, `balanced`, or `chatty` |
+| `chatCompanionPath` | `$DSH_HOME/deskpet/companion.json` | Relationship/emotion persistence file |
+| `chatEmotionEnabled` | `true` | Track a lightweight mood/energy state from conversation |
+| `chatEventsEnabled` | `true` | Distil and recall concrete events from conversation |
+| `chatEventUpdateEveryTurns` | `4` | Completed turns between event-memory extractions |
+| `chatEventMaxEvents` | `50` | Maximum stored event memories |
+| `chatEventPath` | `$DSH_HOME/deskpet/events.json` | Event-memory persistence file |
 
 The Python script path is **not** configurable: it is resolved from the plugin
 module URL as `python/deskpet_bridge.py`, so moving or renaming the plugin
@@ -324,8 +336,8 @@ hand-edit the profile's `package.json` or `cordis.patch.yml` to install it.
 | Test | Coverage | Result |
 |---|---|---|
 | `tests/config-smoke.mjs` | native schema shape, defaults, invalid inputs, interpreter selection | 10/10 |
-| `tests/chat-host-smoke.mjs` | request shape, context, history persistence, long-term memory, stable-ID memory management, stale-write protection, failures, timeout, cleanup | 24/24 |
-| `tests/chat-ui-smoke.py` | dialog submit/reply/continuation/error, history restore, date dividers, memory view/delete confirmation, save failure, timeout and stale response handling | 36/36 |
+| `tests/chat-host-smoke.mjs` | request shape, context, history persistence, long-term memory, stable-ID memory management, stale-write protection, failures, timeout, cleanup | 25/25 |
+| `tests/chat-ui-smoke.py` | dialog submit/reply/continuation/error, history restore, date dividers, memory view/delete confirmation, save failure, timeout and stale response handling | 39/39 |
 | `tests/bridge-smoke.mjs` | apply cleanup, ping/pong, process exit, idempotent stop, state forwarding, EOF and timeout termination | 8/8 |
 | `tests/agent-status-smoke.mjs` | availability/results, concurrency, continuous turns, stale instances/events, startup, cleanup | Passed |
 | `tests/agent-status-ui-smoke.py` | 11 queue → Qt transitions, result deadlines, concurrency, legacy/malformed input, ping/shutdown | Passed |
@@ -371,8 +383,10 @@ passed; remaining DSH scenarios are tracked separately in the validation record.
 Config settings, portable Python discovery, isolated environment setup and
 candidate-package checks are implemented. The user confirmed acceptance testing
 passed on November 9, 2026 and authorized the `0.2.0-rc.1` prerelease.
-Timers/reminders and a bundled Python executable remain future
-features, not blockers for the documented Python-environment delivery option.
+Timers/reminders, relationship/emotion state, proactive care, event memory and
+the current reliability fixes are included in the `0.2.1-rc.1` candidate.
+A bundled Python executable remains a future delivery option, not a blocker for
+the documented Python-environment delivery option.
 
 See [`docs/RELEASE-STATUS.md`](./docs/RELEASE-STATUS.md) in the source checkout
 for the completed checks and user acceptance record.

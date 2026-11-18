@@ -1,6 +1,6 @@
 {
   "name": "dsh-deskpet",
-  "version": "0.2.0-rc.1",
+  "version": "0.2.1-rc.1",
   "private": true,
   "description": "Minimal DSH Host bridge that runs a Python desktop-pet process over newline-delimited JSON.",
   "type": "module",

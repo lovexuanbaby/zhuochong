@@ -1,13 +1,13 @@
 # 安装与发布说明（Windows）
 
-本版为 `0.2.0-rc.1` 本地安装候选包，沿用现有 DSH 模型和凭据。交付方式为 **JS 插件包 + 独立 Python 虚拟环境**，不捆绑 Python 可执行文件。
+本版为 `0.2.1-rc.1` 本地安装候选包，沿用现有 DSH 模型和凭据。交付方式为 **JS 插件包 + 独立 Python 虚拟环境**，不捆绑 Python 可执行文件。
 
 ## 前提
 
 - Windows；DSH Desktop 已安装并配置模型。
 - Python 3.10 或更高版本；`PySide6-Essentials` 固定为 `6.12.0`（包含窗口所需 Qt 模块，不安装 WebEngine 等无关组件）。
 - 安装依赖时需要能访问 Python 包源；此过程不会读取模型密钥。
-- 已验证的 DSH 接口基线为 `0.2.1-rc.5`；其他版本需重新确认。
+- 已验证的 DSH 接口基线为 `0.2.2-rc.3`；其他版本需重新确认。
 
 ## 安装
 
@@ -44,7 +44,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\doctor.ps1 -Python
 
 ## 数据与删除语义
 
-- 聊天历史和用户画像分别保存在 `chat-history.json`、`user-memory.json`，均为本机明文。
+- 聊天历史和用户画像分别保存在 `chat-history.json`、`user-memory.json`，均为本机明文；计时/提醒和陪伴状态分别保存在 `timers.json`、`companion.json`，事件记忆保存在 `events.json`。
 - 删除记忆不删除聊天记录；原聊天仍可能出现在模型上下文中。
 - 删除成功后停止从删除前的旧用户轮次提炼画像；已删除事实的规范化文本摘要被过滤，防止同一条事实重新保存。
 - 新对话重新提及相关内容时，模型仍可能生成不同表述。删除记忆不是清除全部对话数据，也不是提供方数据删除操作。
