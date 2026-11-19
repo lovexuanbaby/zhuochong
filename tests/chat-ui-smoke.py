@@ -18,7 +18,6 @@ import json
 import os
 import pathlib
 import sys
-from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -27,7 +26,7 @@ sys.path.insert(0, str(ROOT / "python"))
 
 from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from pet_windows import PetWindow  # noqa: E402
 
@@ -48,6 +47,7 @@ def main() -> int:
             QFontDatabase.addApplicationFont(str(font))
 
     window = PetWindow()
+    window.show()
     sent: list[str] = []
     window.on_chat_submit = sent.append
     window.set_status("任务完成", "done")
@@ -188,11 +188,12 @@ def main() -> int:
     checks.append(("记忆列表保留稳定 id", dialog._memory_dialog._list.currentItem().data(Qt.ItemDataRole.UserRole) == "timer"))
     checks.append(("打开记忆不改变聊天历史", dialog.messages == before_memory))
     memory = dialog._memory_dialog
-    with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No):
-        memory._delete.click()
+    memory._delete.click()
+    checks.append(("删除使用面板内确认、不创建额外弹窗", memory._confirmation.isVisible() and QApplication.activeModalWidget() is None and window.isVisible()))
+    memory._cancel_delete.click()
     checks.append(("取消删除不发送请求", delete_requests == [] and memory._list.count() == 2))
-    with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
-        memory._delete.click()
+    memory._delete.click()
+    memory._confirm_delete.click()
     checks.append(("确认删除发送稳定标识和版本", delete_requests == [("timer", 7, 2)]))
     checks.append(("等待保存时保留原条目", memory._list.count() == 2 and memory._timeout.isActive() and not memory._delete.isEnabled()))
     window.memory_error("保存失败，请刷新重试", 2)
@@ -200,8 +201,8 @@ def main() -> int:
     memory.refresh()
     window.set_memory_facts(facts, 7, 3)
     memory._list.setCurrentRow(1)
-    with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
-        memory._delete.click()
+    memory._delete.click()
+    memory._confirm_delete.click()
     window.set_memory_facts([facts[0]], 8, 4)
     checks.append(("成功响应后才移除条目", memory._list.count() == 1 and memory._pending_request is None and dialog.messages == before_memory))
     memory.refresh()  # request 5

@@ -6,7 +6,8 @@ pet includes a small chat dialog whose replies use the DSH-configured model.
 Credentials stay owned by DSH: the plugin reads no key files and starts no
 second Harness.
 
-The current local installation candidate is **0.2.1-rc.2**. See
+The current release is **0.2.2** (daily recap and explicit-feedback style learning).
+The previous release is **0.2.1-rc.2**. See
 [`docs/INSTALL.md`](./docs/INSTALL.md) for setup, diagnostics, settings, and data
 handling. Release artifacts are produced by `npm run release:check`.
 
@@ -236,6 +237,32 @@ None of this touches a DSH session either: `chat-history.json` and
 
 ## Configuration
 
+### Daily recap and style feedback
+
+Open **日报** in the pet chat dialog to view daily work records. The collector
+records new DSH task events after activation, with bounded user-title/public-reply
+excerpts, outcomes and tool counts. It excludes reasoning, tool arguments and
+raw tool output. Days use `Asia/Shanghai`; retention is 30 days / 300 task turns.
+
+Viewing a recap is local. **模型生成回顾** makes one call to the configured DSH
+model using the selected day's latest 50 task summaries. The UI shows the
+collector → writer → output/version check sequence. **更简洁 / 更多细节 / 更正式 /
+更轻松** updates bounded style preferences, records feedback revisions, and applies
+them to later recaps and pet replies. **重置风格** restores defaults.
+
+This is a lightweight feedback loop (RSI-lite demonstration), not model-weight
+training, autonomous code rewriting, or a new fleet of DSH agents. It does not
+infer preferences solely from the model's own output. See
+[`docs/DAILY-REVIEW.md`](./docs/DAILY-REVIEW.md) for data boundaries and tests.
+
+`chatDailyEnabled` defaults to true; false disables collection and style
+injection. `chatDailyPath` overrides `daily-review.json`, which defaults to the
+same directory as chat history. No old DSH session files are scanned.
+
+Python → Host: `review/open`, `review/generate`, `review/feedback`, `review/cancel`.
+Host → Python: `review/result`, `review/progress`, `review/error` (request ids
+correlate messages). A failed or canceled generation preserves local records.
+
 The chat dialog's **记忆** button opens a refreshable list. Deletion uses a
 stable fact id and snapshot revision, asks for confirmation, and updates the UI
 only after atomic persistence succeeds. An expired list must be refreshed.
@@ -337,7 +364,8 @@ hand-edit the profile's `package.json` or `cordis.patch.yml` to install it.
 |---|---|---|
 | `tests/config-smoke.mjs` | native schema shape, defaults, invalid inputs, interpreter selection | 10/10 |
 | `tests/chat-host-smoke.mjs` | request shape, context, history persistence, long-term memory, stable-ID memory management, stale-write protection, failures, timeout, cleanup | 25/25 |
-| `tests/chat-ui-smoke.py` | dialog submit/reply/continuation/error, history restore, date dividers, memory view/delete confirmation, save failure, timeout and stale response handling | 39/39 |
+| `tests/chat-ui-smoke.py` | dialog submit/reply/continuation/error, history restore, date dividers, inline memory confirmation, save failure, timeout and stale responses | 40/40 |
+| `tests/memory-window-smoke.py` | real Qt loop: inline confirm/cancel, window lifetime, animation, ping and explicit shutdown | 7/7 |
 | `tests/bridge-smoke.mjs` | apply cleanup, ping/pong, process exit, idempotent stop, state forwarding, EOF and timeout termination | 8/8 |
 | `tests/agent-status-smoke.mjs` | availability/results, concurrency, continuous turns, stale instances/events, startup, cleanup | Passed |
 | `tests/agent-status-ui-smoke.py` | 11 queue → Qt transitions, result deadlines, concurrency, legacy/malformed input, ping/shutdown | Passed |

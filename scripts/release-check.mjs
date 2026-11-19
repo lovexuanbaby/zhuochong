@@ -15,7 +15,7 @@ const packed = spawnSync(process.execPath, [npm, 'pack', '--json', '--ignore-scr
 assert.equal(packed.status, 0, packed.stderr || packed.error?.message)
 const [result] = JSON.parse(packed.stdout)
 const files = result.files.map(file => file.path)
-for (const expected of ['index.js', 'config.js', 'python-runtime.js', 'cordis.patch.yml', 'python/deskpet_bridge.py', 'python/pet_windows.py', 'requirements.txt', 'scripts/setup.ps1', 'scripts/doctor.ps1', 'scripts/python-common.ps1', 'docs/INSTALL.md']) {
+for (const expected of ['index.js', 'daily-review.js', 'config.js', 'python-runtime.js', 'cordis.patch.yml', 'python/deskpet_bridge.py', 'python/pet_windows.py', 'requirements.txt', 'scripts/setup.ps1', 'scripts/doctor.ps1', 'scripts/python-common.ps1', 'docs/INSTALL.md']) {
   assert.ok(files.includes(expected), `Missing packed file: ${expected}`)
 }
 assert.ok(!files.some(file => /(?:^|\/)(?:tests|node_modules|\.git|build|dist|__pycache__)(?:\/|$)/u.test(file)), 'Development data must not be shipped')

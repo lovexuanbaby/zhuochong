@@ -35,13 +35,15 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
-    QMessageBox,
+    QPlainTextEdit,
+    QComboBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -180,6 +182,7 @@ class ChatDialog(QDialog):
         self._memory_count = 0
         self._timers: list[float] = []
         self._memory_dialog: MemoryDialog | None = None
+        self._review_dialog: DailyReviewDialog | None = None
         self._status_base = ""
         self._status_dots = 0
         self._status_timer = QTimer(self)
@@ -230,6 +233,14 @@ class ChatDialog(QDialog):
             "QPushButton:hover { color: #dff7f2; border-color: #4fd3c0; }"
         )
         memory_btn.clicked.connect(self.open_memory)
+        review_btn = QPushButton("日报", title_bar)
+        review_btn.setFixedHeight(24)
+        review_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        review_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        review_btn.setAutoDefault(False)
+        review_btn.setDefault(False)
+        review_btn.setStyleSheet(memory_btn.styleSheet())
+        review_btn.clicked.connect(self.open_daily_review)
         close_btn = QPushButton("✕", title_bar)
         close_btn.setFixedSize(24, 24)
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -247,6 +258,7 @@ class ChatDialog(QDialog):
         title_layout.addWidget(title)
         title_layout.addStretch(1)
         title_layout.addWidget(memory_btn)
+        title_layout.addWidget(review_btn)
         title_layout.addWidget(close_btn)
         outer.addWidget(title_bar)
         outer.addWidget(hint)
@@ -445,6 +457,27 @@ class ChatDialog(QDialog):
             self._memory_dialog = MemoryDialog(self)
         self._memory_dialog.set_error(text, request_id)
 
+    def open_daily_review(self) -> None:
+        if self._review_dialog is None:
+            self._review_dialog = DailyReviewDialog(self)
+        self._review_dialog.show_near(self)
+        self._review_dialog.show()
+        self._review_dialog.raise_()
+        self._review_dialog.activateWindow()
+        self._review_dialog.open_today()
+
+    def daily_review_progress(self, request_id, text: object) -> None:
+        if self._review_dialog is not None:
+            self._review_dialog.set_progress(request_id, str(text or "正在整理"))
+
+    def daily_review_result(self, message: object) -> None:
+        if isinstance(message, dict) and self._review_dialog is not None:
+            self._review_dialog.set_result(message)
+
+    def daily_review_error(self, request_id, text: object) -> None:
+        if self._review_dialog is not None:
+            self._review_dialog.set_error(request_id, str(text or "日报处理失败"))
+
     def _clear_messages(self) -> None:
         while self._messages_layout.count() > 1:  # 保留末尾弹簧
             item = self._messages_layout.takeAt(0)
@@ -599,6 +632,205 @@ class ChatDialog(QDialog):
         self.move(x, y)
 
 
+class DailyReviewDialog(QDialog):
+    FEEDBACK = {
+        "更简洁": "shorter", "更多细节": "longer", "更正式": "formal",
+        "更轻松": "casual", "重置风格": "reset",
+    }
+
+    def __init__(self, chat: ChatDialog) -> None:
+        super().__init__(chat)
+        self._owner = chat._owner
+        self._request_id = 0
+        self._pending_id = None
+        self._revision = 0
+        self._timeout = QTimer(self)
+        self._timeout.setSingleShot(True)
+        self._timeout.timeout.connect(self._on_timeout)
+        self.setWindowTitle("每日工作回顾")
+        self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFixedSize(450, 500)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 12, 14, 14)
+        outer.setSpacing(8)
+        bar = _DragBar(self)
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(0, 0, 0, 0)
+        title = QLabel("每日工作回顾", bar)
+        title.setStyleSheet(f"color: {CHAT_TITLE}; font: 600 12pt '{UI_FONT}';")
+        row.addWidget(title)
+        row.addStretch(1)
+        self._date = QComboBox(bar)
+        self._date.setStyleSheet(f"color: {CHAT_TITLE}; background: {CHAT_INPUT_BG}; padding: 4px; font: 9pt '{UI_FONT}';")
+        self._date.currentTextChanged.connect(self._open_selected)
+        row.addWidget(self._date)
+        self._close = QPushButton("关闭", bar)
+        self._close.clicked.connect(self.hide)
+        row.addWidget(self._close)
+        notice = QLabel("仅记录启用后捕获的工作。模型润色使用最近 50 项任务的标题和回复摘要，不含工具参数、原始输出或推理过程。", self)
+        notice.setWordWrap(True)
+        notice.setStyleSheet(f"color: {CHAT_MUTED}; font: 8pt '{UI_FONT}';")
+        self._steps = QLabel("记录员 → 总结员 → 检查员 → 风格反馈", self)
+        self._steps.setTextFormat(Qt.TextFormat.PlainText)
+        self._steps.setWordWrap(True)
+        self._steps.setStyleSheet(f"color: {CHAT_MUTED}; font: 9pt '{UI_FONT}';")
+        self._report = QPlainTextEdit(self)
+        self._report.setReadOnly(True)
+        self._report.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self._report.setStyleSheet(f"QPlainTextEdit {{color:#dbeef6;background:{CHAT_INPUT_BG};border:1px solid rgba(127,182,201,.35);border-radius:9px;padding:8px;font:10pt '{UI_FONT}';}}")
+        self._status = QLabel("", self)
+        self._status.setTextFormat(Qt.TextFormat.PlainText)
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet(f"color: {CHAT_MUTED}; font: 8.5pt '{UI_FONT}';")
+        feedback = QGridLayout()
+        feedback.setHorizontalSpacing(6)
+        feedback.setVerticalSpacing(5)
+        self._feedback_buttons = []
+        for index, (label, code) in enumerate(self.FEEDBACK.items()):
+            button = QPushButton(label, self)
+            button.setAutoDefault(False)
+            button.setDefault(False)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.clicked.connect(lambda _checked=False, choice=code: self._feedback(choice))
+            feedback.addWidget(button, index // 3, index % 3)
+            self._feedback_buttons.append(button)
+        self._generate = QPushButton("模型生成回顾", self)
+        self._generate.clicked.connect(self._generate_report)
+        self._refresh = QPushButton("刷新", self)
+        self._refresh.clicked.connect(self._refresh_selected)
+        for button in [self._close, *self._feedback_buttons, self._generate, self._refresh]:
+            button.setAutoDefault(False)
+            button.setDefault(False)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setStyleSheet(f"QPushButton {{color:{CHAT_TITLE};background:#17433f;border:1px solid #2f8073;border-radius:7px;padding:6px 8px;font:9pt '{UI_FONT}';}} QPushButton:hover{{background:#215b53;}} QPushButton:disabled{{color:#668581;background:#172b2c;border-color:#254543;}}")
+        actions = QHBoxLayout()
+        actions.addWidget(self._generate)
+        actions.addStretch(1)
+        actions.addWidget(self._refresh)
+        outer.addWidget(bar)
+        outer.addWidget(notice)
+        outer.addWidget(self._steps)
+        outer.addWidget(self._report, 1)
+        outer.addWidget(self._status)
+        outer.addLayout(feedback)
+        outer.addLayout(actions)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHints(QPainter.RenderHint.Antialiasing)
+        body = QPainterPath()
+        body.addRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 18, 18)
+        gradient = QLinearGradient(0, 0, 0, self.height())
+        gradient.setColorAt(0, QColor(CHAT_BG_TOP)); gradient.setColorAt(1, QColor(CHAT_BG_BOTTOM))
+        painter.setPen(QPen(QColor(CHAT_BORDER), 2)); painter.setBrush(gradient); painter.drawPath(body)
+
+    def show_near(self, anchor: QWidget) -> None:
+        screen = anchor.screen() or QApplication.primaryScreen()
+        if screen is None: self.move(0, 0); return
+        area = screen.availableGeometry()
+        x, y = anchor.x() + anchor.width() - self.width(), anchor.y() - self.height() - 8
+        self.move(max(area.left()+8, min(x, area.right()-self.width()-8)), max(area.top()+8, min(y, area.bottom()-self.height()-8)))
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        _force_topmost(self)
+
+    def _request(self, kind, **values) -> None:
+        if self._pending_id is not None: return
+        self._request_id += 1
+        request_id = self._request_id
+        self._pending_id = request_id
+        self._set_busy(True)
+        self._status.setText("正在收集任务记录……" if kind == "review/open" else "记录员 → 总结员 → 检查员：整理中")
+        self._timeout.start(65000 if kind == "review/generate" else 10000)
+        callback = getattr(self._owner, "on_daily_review", None)
+        if callback is None:
+            self.set_error(request_id, "Host 插件未连接")
+            return
+        try: callback({"type": kind, "id": request_id, **values})
+        except Exception as error: self.set_error(request_id, str(error))
+
+    def open_today(self) -> None:
+        if self._pending_id is None: self._request("review/open")
+
+    def _open_selected(self, day) -> None:
+        if day and self._pending_id is None: self._request("review/open", day=day)
+
+    def _generate_report(self) -> None:
+        day = self._date.currentText()
+        if day: self._request("review/generate", day=day, styleRevision=self._revision)
+
+    def _refresh_selected(self) -> None:
+        day = self._date.currentText()
+        self._request("review/open", **({"day": day} if day else {}))
+
+    def _cancel_pending(self) -> None:
+        request_id = self._pending_id
+        self._timeout.stop()
+        self._pending_id = None
+        self._set_busy(False)
+        callback = getattr(self._owner, "on_daily_review", None)
+        if request_id is not None and callback:
+            try: callback({"type": "review/cancel", "id": request_id})
+            except Exception: pass
+
+    def _on_timeout(self) -> None:
+        self._cancel_pending()
+        self._status.setText("请求超时，可刷新本地回顾或重新生成。")
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._cancel_pending()
+        super().hideEvent(event)
+
+    def _feedback(self, choice) -> None:
+        if self._date.currentText():
+            self._request("review/feedback", day=self._date.currentText(), revision=self._revision, feedback=choice)
+
+    def set_progress(self, request_id, text) -> None:
+        if request_id == self._pending_id: self._status.setText(text)
+
+    def set_result(self, message: dict) -> None:
+        if self._pending_id is None or message.get("id") != self._pending_id: return
+        style = message.get("style")
+        if not isinstance(style, dict) or type(style.get("revision")) is not int or not isinstance(message.get("text"), str):
+            self.set_error(self._pending_id, "回顾数据格式无效，请刷新")
+            return
+        self._timeout.stop()
+        self._pending_id = None
+        self._revision = style["revision"]
+        dates = message.get("dates") if isinstance(message.get("dates"), list) else []
+        self._date.blockSignals(True)
+        self._date.clear()
+        self._date.addItems([day for day in dates if isinstance(day, str)])
+        index = self._date.findText(message.get("day", ""))
+        if index >= 0: self._date.setCurrentIndex(index)
+        self._date.blockSignals(False)
+        self._set_busy(False)
+        self._report.setPlainText(message.get("text", ""))
+        brevity = style.get("brevity", 0)
+        formality = style.get("formality", 0)
+        self._steps.setText(message.get("step") or ("记录员收集 → 本地汇总" if message.get("mode") == "local" else "记录员 → 总结员 → 检查员：已完成"))
+        feedback = [item for item in style.get("feedback", []) if isinstance(item, dict)] if isinstance(style.get("feedback"), list) else []
+        last = feedback[-1].get("choice") if feedback else None
+        label = next((name for name, value in self.FEEDBACK.items() if value == last), "")
+        self._status.setText(f"已采纳 {self._revision} 次风格反馈。风格：{'简洁' if brevity > 0 else '详细' if brevity < 0 else '适中'} · {'正式' if formality > 0 else '轻松' if formality < 0 else '自然'}{f' · 最近反馈：{label}' if label else ''}")
+        self._generate.setEnabled(bool(message.get("taskCount")))
+
+    def set_error(self, request_id, text) -> None:
+        if request_id is not None and request_id != self._pending_id: return
+        self._timeout.stop()
+        self._pending_id = None
+        self._set_busy(False)
+        self._status.setText(text or "操作失败；本地任务记录仍保留，可以重试。")
+
+    def _set_busy(self, busy) -> None:
+        self._date.setEnabled(not busy)
+        self._refresh.setEnabled(not busy)
+        self._generate.setEnabled(not busy and bool(self._date.currentText()))
+        for button in self._feedback_buttons: button.setEnabled(not busy)
+
+
 class MemoryDialog(QDialog):
     """查看并删除长期记忆；删除只影响画像，不改聊天历史。"""
 
@@ -610,6 +842,7 @@ class MemoryDialog(QDialog):
         self._pending_request = None
         self._request_sequence = 0
         self._revision = None
+        self._delete_target = None
         self._timeout = QTimer(self)
         self._timeout.setSingleShot(True)
         self._timeout.timeout.connect(lambda: self.set_error("请求超时，请刷新确认最新记忆。"))
@@ -648,7 +881,24 @@ class MemoryDialog(QDialog):
         close.clicked.connect(self.hide)
         self._refresh = QPushButton("刷新", self)
         self._refresh.clicked.connect(self.refresh)
-        for button in (self._delete, self._refresh, close):
+        self._confirmation = QWidget(self)
+        confirm_layout = QVBoxLayout(self._confirmation)
+        confirm_layout.setContentsMargins(8, 6, 8, 6)
+        self._confirm_text = QLabel(self._confirmation)
+        self._confirm_text.setTextFormat(Qt.TextFormat.PlainText)
+        self._confirm_text.setWordWrap(True)
+        self._confirm_text.setStyleSheet(f"color: {CHAT_TITLE}; font: 9pt '{UI_FONT}';")
+        self._confirm_delete = QPushButton("确认删除", self._confirmation)
+        self._confirm_delete.clicked.connect(self.confirm_selected)
+        self._cancel_delete = QPushButton("取消", self._confirmation)
+        self._cancel_delete.clicked.connect(self.cancel_delete)
+        confirm_buttons = QHBoxLayout()
+        confirm_buttons.addWidget(self._confirm_delete)
+        confirm_buttons.addWidget(self._cancel_delete)
+        confirm_layout.addWidget(self._confirm_text)
+        confirm_layout.addLayout(confirm_buttons)
+        self._confirmation.hide()
+        for button in (self._delete, self._refresh, close, self._confirm_delete, self._cancel_delete):
             button.setAutoDefault(False)
             button.setDefault(False)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -666,15 +916,19 @@ class MemoryDialog(QDialog):
         outer.addWidget(title_bar)
         outer.addWidget(note)
         outer.addWidget(self._list, 1)
+        outer.addWidget(self._confirmation)
         outer.addWidget(self._empty)
         outer.addLayout(buttons)
         self._list.itemSelectionChanged.connect(self._update_buttons)
 
     def _update_buttons(self) -> None:
         ready = self._pending_request is None
-        self._delete.setEnabled(ready and self._revision is not None and self._list.currentItem() is not None)
-        self._list.setEnabled(ready)
-        self._refresh.setEnabled(ready)
+        confirming = self._delete_target is not None
+        self._delete.setEnabled(ready and not confirming and self._revision is not None and self._list.currentItem() is not None)
+        self._list.setEnabled(ready and not confirming)
+        self._refresh.setEnabled(ready and not confirming)
+        self._confirm_delete.setEnabled(ready and confirming)
+        self._cancel_delete.setEnabled(ready and confirming)
 
     def _request(self, action: str, fact_id=None, revision=None) -> None:
         if self._pending_request is not None:
@@ -744,6 +998,7 @@ class MemoryDialog(QDialog):
         self._pending_request = None
         self._revision = revision
         self._delete_pending = False
+        self.cancel_delete()
         self._list.clear()
         kinds = {"preference": "偏好", "habit": "习惯", "goal": "目标", "fact": "事实", "relation": "关系"}
         for item in self._items:
@@ -762,6 +1017,7 @@ class MemoryDialog(QDialog):
         self._pending_request = None
         self._delete_pending = False
         self._revision = None
+        self.cancel_delete()
         self._empty.setText(text or "记忆操作失败")
         self._empty.show()
         self._update_buttons()
@@ -772,10 +1028,41 @@ class MemoryDialog(QDialog):
             return
         fact_id = item.data(Qt.ItemDataRole.UserRole)
         revision = self._revision
-        answer = QMessageBox.question(self, "删除记忆", f"确定删除这条长期记忆吗？\n\n{item.text()}\n\n聊天记录会保留；之后仅从新对话整理记忆。", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-        if answer != QMessageBox.StandardButton.Yes:
+        self._delete_target = (fact_id, revision)
+        self._confirm_text.setText(f"删除这条记忆？聊天记录会保留。\n{item.text()}")
+        self._confirmation.show()
+        self._update_buttons()
+
+    def cancel_delete(self) -> None:
+        self._delete_target = None
+        self._confirmation.hide()
+        self._update_buttons()
+
+    def confirm_selected(self) -> None:
+        target = self._delete_target
+        if target is None or self._pending_request is not None:
             return
+        fact_id, revision = target
+        item = self._list.currentItem()
+        if self._revision != revision or item is None or item.data(Qt.ItemDataRole.UserRole) != fact_id:
+            self.set_error("记忆列表已变化，请刷新后重新选择")
+            return
+        self.cancel_delete()
         self._request("delete", fact_id, revision)
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self.cancel_delete()
+        super().hideEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_Escape:
+            if self._delete_target is not None:
+                self.cancel_delete()
+            else:
+                self.hide()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 class PetWindow(QWidget):
@@ -824,6 +1111,7 @@ class PetWindow(QWidget):
         self.on_chat_submit = None
         self.on_memory_list = None
         self.on_memory_delete = None
+        self.on_daily_review = None
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_tick)
@@ -926,6 +1214,16 @@ class PetWindow(QWidget):
 
     def memory_error(self, text: object, request_id=None) -> None:
         self._ensure_chat().memory_error(str(text or "记忆操作失败"), request_id)
+
+    def daily_review_result(self, message: object) -> None:
+        if isinstance(message, dict):
+            self._ensure_chat().daily_review_result(message)
+
+    def daily_review_progress(self, request_id, text: object) -> None:
+        self._ensure_chat().daily_review_progress(request_id, text)
+
+    def daily_review_error(self, request_id, text: object) -> None:
+        self._ensure_chat().daily_review_error(request_id, text)
 
     def set_timers(self, timers: object) -> None:
         """把进行中的计时同步给对话框（标题栏倒计时）。"""
@@ -1433,6 +1731,13 @@ class PetWindow(QWidget):
         )
 
     # ---------------------------------------------------------------- 交互
+    def closeEvent(self, event) -> None:  # noqa: N802
+        # An explicit close of the pet itself is an exit; child dialogs only hide.
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+        super().closeEvent(event)
+
     def _build_menu(self) -> None:
         self._menu = QMenu(self)
         self._act_top = self._menu.addAction("总在最前")
@@ -1523,6 +1828,7 @@ if __name__ == "__main__":
     import sys
 
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
     window = PetWindow()
     window.show()
     sys.exit(app.exec())

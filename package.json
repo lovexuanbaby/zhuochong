@@ -1,6 +1,6 @@
 {
   "name": "dsh-deskpet",
-  "version": "0.2.1-rc.2",
+  "version": "0.2.2",
   "private": true,
   "description": "Minimal DSH Host bridge that runs a Python desktop-pet process over newline-delimited JSON.",
   "type": "module",
@@ -25,6 +25,7 @@
   },
   "files": [
     "index.js",
+    "daily-review.js",
     "config.js",
     "python-runtime.js",
     "cordis.patch.yml",
@@ -34,6 +35,7 @@
     "scripts/doctor.ps1",
     "scripts/python-common.ps1",
     "docs/INSTALL.md",
+    "docs/DAILY-REVIEW.md",
     "locale/*.json",
     "icon.svg",
     "README.md"

@@ -12,6 +12,9 @@ Host → Python:
 - {"type":"chat/memory","count":12}          长期记忆条数（标题栏提示）
 - {"type":"chat/memory/details","id":1,"revision":0,"items":[{"id":"...","kind":"preference","text":"..."}]}  记忆管理
 - {"type":"chat/timer","event":"fired","kind":"countdown","text":"计时结束：5 分钟"}  计时/提醒到点
+- {"type":"review/result","id":1,"day":"2026-11-19","text":"..."}  每日工作回顾
+- {"type":"review/progress","id":1,"step":"..."}  回顾步骤
+- {"type":"review/error","id":1,"message":"..."}  回顾失败/重试提示
 - {"type":"chat/accepted","id":7}           DSH 已接收桌宠输入
 - {"type":"chat/reply","id":7,"text":"...","reason":"completed"}  回复收尾
 - {"type":"chat/error","id":7,"message":"..."}                    发送失败
@@ -36,7 +39,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from pet_windows import PetWindow, RESULT_STATES, STATE_LABELS
-VERSION = "0.2.0-rc.1"
+VERSION = "0.2.2"
 
 
 def log(message: str) -> None:
@@ -105,6 +108,8 @@ def main() -> int:
     configure_streams()
 
     app = QApplication(sys.argv)
+    # Child/tool windows can close independently without terminating the Host-owned pet.
+    app.setQuitOnLastWindowClosed(False)
     window = PetWindow()
 
     # 桌宠对话：用户输入 → Host 会话；Host 回复 → 对话框。
@@ -128,6 +133,7 @@ def main() -> int:
     window.on_memory_delete = lambda fact_id, revision, request_id: send({
         "type": "memory/delete", "id": request_id, "factId": fact_id, "revision": revision,
     })
+    window.on_daily_review = lambda message: send(message)
 
     inbox = Queue()
     stop_event = threading.Event()
@@ -197,6 +203,15 @@ def main() -> int:
             elif message_type == "chat/memory/error":
                 window.memory_error(message.get("message") or "记忆操作失败", message.get("id"))
                 log(f"long-term memory error: {message.get('message')}")
+
+            elif message_type == "review/result":
+                window.daily_review_result(message)
+
+            elif message_type == "review/progress":
+                window.daily_review_progress(message.get("id"), message.get("step"))
+
+            elif message_type == "review/error":
+                window.daily_review_error(message.get("id"), message.get("message"))
 
             elif message_type == "chat/timer":
                 if message.get("event") == "fired":

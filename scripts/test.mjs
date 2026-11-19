@@ -9,7 +9,10 @@ const tests = [
   ['tests/config-smoke.mjs', process.execPath],
   ['tests/agent-status-smoke.mjs', process.execPath],
   ['tests/chat-host-smoke.mjs', process.execPath],
+  ['tests/daily-review-smoke.mjs', process.execPath],
   ['tests/chat-ui-smoke.py', python],
+  ['tests/memory-window-smoke.py', python],
+  ['tests/daily-review-ui-smoke.py', python],
   ['tests/agent-status-ui-smoke.py', python],
   ['tests/bridge-smoke.mjs', process.execPath, python],
 ]

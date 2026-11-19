@@ -17,7 +17,7 @@ check('schema and runtime share all numeric/boolean defaults', () => {
   }
 })
 check('invalid timing, fractional limits and boolean strings are rejected', () => {
-  for (const patch of [{pingIntervalMs: 10}, {chatTimeoutMs: 2 ** 32}, {chatMemoryMaxFacts: 1.5}, {chatMemoryEnabled: 'false'}]) {
+  for (const patch of [{pingIntervalMs: 10}, {chatTimeoutMs: 2 ** 32}, {chatMemoryMaxFacts: 1.5}, {chatMemoryEnabled: 'false'}, {chatDailyEnabled: 'false'}, {chatDailyPath: 42}]) {
     assert.throws(() => Config(patch))
     assert.throws(() => normalizeConfig(patch))
   }

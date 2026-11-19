@@ -35,4 +35,6 @@ export const Config = Schema.object({
   chatEventMaxEvents: integer(50).description('最多保留的事件记忆条数'),
   chatEventPath: Schema.string().description('可选：事件记忆文件路径；留空使用 DSH 数据目录。'),
   chatProactiveLevel: Schema.union(['quiet', 'balanced', 'chatty']).default('quiet').description('主动关心档位：quiet（最低打扰）/ balanced（含早安）/ chatty（含午间问候）。'),
+  chatDailyEnabled: Schema.boolean().default(true).description('记录启用后捕获的 DSH 任务概要，提供每日回顾和反馈式表达偏好学习。'),
+  chatDailyPath: Schema.string().description('可选：每日回顾文件路径；默认与聊天历史同目录，使用独立的 daily-review.json 文件。'),
 })
