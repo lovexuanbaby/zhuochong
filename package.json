@@ -1,12 +1,18 @@
 {
   "name": "dsh-deskpet",
-  "version": "0.2.1-rc.1",
+  "version": "0.2.1-rc.2",
   "private": true,
   "description": "Minimal DSH Host bridge that runs a Python desktop-pet process over newline-delimited JSON.",
   "type": "module",
-  "engines": { "node": ">=20" },
-  "os": ["win32"],
-  "dependencies": { "@deepseek-ai/schemastery": "3.18.5" },
+  "engines": {
+    "node": ">=20"
+  },
+  "os": [
+    "win32"
+  ],
+  "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.5"
+  },
   "scripts": {
     "test": "node scripts/test.mjs",
     "test:host": "node tests/config-smoke.mjs && node tests/agent-status-smoke.mjs && node tests/chat-host-smoke.mjs",

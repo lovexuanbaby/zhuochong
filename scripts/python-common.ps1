@@ -31,3 +31,15 @@ function Find-DeskpetPython([string]$Python, [string]$DataRoot) {
     }
     throw 'Install Python 3.10+ first, or pass -Python with the full path to python.exe.'
 }
+
+function Test-DeskpetLongPathsEnabled {
+    # The pinned Qt wheel unpacks file names longer than the classic MAX_PATH
+    # limit. If the machine already opted into long paths, a deep venv root is
+    # fine and must not be rejected. Read the policy, never write it.
+    try {
+        $item = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -ErrorAction Stop
+        return ($item.LongPathsEnabled -eq 1)
+    } catch {
+        return $false
+    }
+}

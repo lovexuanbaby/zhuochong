@@ -1,6 +1,6 @@
-# 0.2.1-rc.1 交付状态
+# 0.2.1-rc.2 交付状态
 
-更新：2026-11-18，Asia/Shanghai。
+更新：2026-11-19，Asia/Shanghai。
 
 ## 仓库内已完成
 
@@ -12,6 +12,7 @@
 - 计时/提醒、陪伴关系与情绪、低打扰主动关心、事件记忆。
 - 修复超时/停用后的孤儿用户消息、历史写入竞态、历史初始化竞态、空 `chatEventPath` 配置。
 - 更新测试、安装说明和发布文档，重新生成候选包与校验清单。
+- 安装脚本修复：长路径判定改为读取系统 `LongPathsEnabled` 策略（策略已启用时不再误拒深路径）；新增 `-PipIndex` / `DSHPET_PIP_INDEX` 指定包源镜像，并在依赖安装失败时给出镜像用法。
 
 ## 已执行的验证
 
@@ -27,6 +28,7 @@
 | 全新、未共享系统包的 Python venv | 通过 |
 | 候选 tgz 打包与清单检查 | 通过 |
 | 上一版 tgz 离线安装 | 通过 |
+| 安装脚本语法与本机注册表读取 | 3 个脚本解析无误；`LongPathsEnabled` 读取结果与本机策略一致 |
 
 原生 Host 校验没有启动另一份 Harness，也没有调用模型。包安装测试和桥接测试使用独立临时数据，不修改用户聊天或记忆。
 
@@ -34,8 +36,8 @@
 
 ## 发布物
 
-- `dist/dsh-deskpet-0.2.1-rc.1.tgz`
-- `dist/dsh-deskpet-0.2.1-rc.1.tgz.sha256`
+- `dist/dsh-deskpet-0.2.1-rc.2.tgz`
+- `dist/dsh-deskpet-0.2.1-rc.2.tgz.sha256`
 - `dist/release-manifest.json`
 
 版本号、打包文件清单和 SHA-256 以 `release-manifest.json` 为准。
@@ -44,4 +46,4 @@
 
 2026-11-09 用户已确认上一版测试通过并授权发布；本轮代码改动后的发布包需要重新签收。当前阶段不推送 Git、不上传 npm；项目仍为 `private: true`，通过 GitHub 发行附件交付。
 
-发布说明见 `docs/RELEASE-NOTES-0.2.1-rc.1.md`。
+发布说明见 `docs/RELEASE-NOTES-0.2.1-rc.2.md`。

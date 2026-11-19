@@ -1,12 +1,12 @@
 # 安装与发布说明（Windows）
 
-本版为 `0.2.1-rc.1` 本地安装候选包，沿用现有 DSH 模型和凭据。交付方式为 **JS 插件包 + 独立 Python 虚拟环境**，不捆绑 Python 可执行文件。
+本版为 `0.2.1-rc.2` 本地安装候选包，沿用现有 DSH 模型和凭据。交付方式为 **JS 插件包 + 独立 Python 虚拟环境**，不捆绑 Python 可执行文件。
 
 ## 前提
 
 - Windows；DSH Desktop 已安装并配置模型。
 - Python 3.10 或更高版本；`PySide6-Essentials` 固定为 `6.12.0`（包含窗口所需 Qt 模块，不安装 WebEngine 等无关组件）。
-- 安装依赖时需要能访问 Python 包源；此过程不会读取模型密钥。
+- 安装依赖时需要能访问 Python 包源（默认 PyPI）。`PySide6-Essentials` 的 wheel 约 80 MB，网络较慢或默认源不可达时，用 `-PipIndex` 指定镜像。此过程不会读取模型密钥。
 - 已验证的 DSH 接口基线为 `0.2.2-rc.3`；其他版本需重新确认。
 
 ## 安装
@@ -18,9 +18,11 @@
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 # 如果本机 Python 不在标准目录：
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup.ps1 -Python 'C:\path with spaces\python.exe'
+# 如果默认包源慢或不可达（wheel 约 80 MB）：
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup.ps1 -PipIndex https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-`ExecutionPolicy Bypass` 只应用于这次脚本进程，不修改系统执行策略。脚本不会安装另一份 DSH 或覆盖聊天、记忆文件。
+`-PipIndex` 也可用环境变量 `DSHPET_PIP_INDEX` 提供，适合在脚本里反复调用。`ExecutionPolicy Bypass` 只应用于这次脚本进程，不修改系统执行策略。脚本不会安装另一份 DSH 或覆盖聊天、记忆文件。
 
 3. 使用 DSH 的插件管理入口安装本地包或链接目录。让 DSH 完成 JS 依赖安装，不手工编辑 profile 的依赖文件。
 4. 在插件设置中将 `pythonPath` 留空，启用插件。已有的显式 `pythonPath` 和 `DSHPET_PYTHON` 优先于自动环境；需要使用新环境时清除旧覆盖。
@@ -40,7 +42,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\doctor.ps1 -Python
 
 `doctor.ps1` 检查 Python/PySide6 版本与导入，输出解释器和数据目录。启用失败时查看 DSH 的 `[python]` 日志；依赖缺失应重新运行 setup。启用前已存在的插件实例需停用再启用，才能载入新代码。
 
-未启用 Windows 长路径支持时，Qt wheel 内部的部分文件名很长；安装脚本会拒绝长度超过 80 字符的虚拟环境根目录。优先使用默认用户数据目录；若改用短 `-DataRoot`，在插件设置里指定对应 Python，或让 DSH 使用同一个 DSH_HOME。插件本身可以放在中文/空格路径，脚本不会修改系统长路径策略。
+Qt wheel 内部的部分文件名较长。安装脚本会读取系统策略 `LongPathsEnabled`：该策略**未启用**且虚拟环境根目录超过 80 字符时，脚本提前拒绝并给出指引，避免装到一半才失败；策略**已启用**时不再限制长度。优先使用默认用户数据目录；若改用短 `-DataRoot`，在插件设置里指定对应 Python，或让 DSH 使用同一个 DSH_HOME。插件本身可以放在中文/空格路径，脚本只读取、从不修改系统长路径策略。
 
 ## 数据与删除语义
 

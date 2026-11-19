@@ -6,7 +6,7 @@ pet includes a small chat dialog whose replies use the DSH-configured model.
 Credentials stay owned by DSH: the plugin reads no key files and starts no
 second Harness.
 
-The current local installation candidate is **0.2.1-rc.1**. See
+The current local installation candidate is **0.2.1-rc.2**. See
 [`docs/INSTALL.md`](./docs/INSTALL.md) for setup, diagnostics, settings, and data
 handling. Release artifacts are produced by `npm run release:check`.
 
@@ -384,7 +384,7 @@ Config settings, portable Python discovery, isolated environment setup and
 candidate-package checks are implemented. The user confirmed acceptance testing
 passed on November 9, 2026 and authorized the `0.2.0-rc.1` prerelease.
 Timers/reminders, relationship/emotion state, proactive care, event memory and
-the current reliability fixes are included in the `0.2.1-rc.1` candidate.
+the current reliability fixes are included in the `0.2.1-rc.2` candidate.
 A bundled Python executable remains a future delivery option, not a blocker for
 the documented Python-environment delivery option.
 
