@@ -37,7 +37,7 @@
     "scripts/python-common.ps1",
     "docs/INSTALL.md",
     "docs/USER-GUIDE.zh-CN.md",
-    "docs/RELEASE-NOTES-0.2.3.md",
+    "docs/RELEASE-NOTES-*.md",
     "docs/DAILY-REVIEW.md",
     "docs/CONVERSATIONS.md",
     "locale/*.json",
