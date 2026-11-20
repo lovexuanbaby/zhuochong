@@ -1,6 +1,6 @@
 # DSH 桌宠功能使用手册
 
-适用于 DSH Desktop 中的 dsh-deskpet 插件。手册说明桌宠提供的功能、常用操作和数据边界；安装步骤见[安装说明](./INSTALL.md)，版本变化见[发行说明](./RELEASE-NOTES-0.2.2.md)。
+适用于 DSH Desktop 中的 dsh-deskpet 插件。手册说明桌宠提供的功能、常用操作和数据边界；安装步骤见[安装说明](./INSTALL.md)，版本变化见[发行说明](./RELEASE-NOTES-0.2.3.md)，对话与任务会话的细节见[对话说明](./CONVERSATIONS.md)。
 
 ## 1. 桌宠与模型
 

@@ -39,7 +39,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from pet_windows import PetWindow, RESULT_STATES, STATE_LABELS
-VERSION = "0.2.3-rc.1"
+VERSION = "0.2.3"
 
 
 def log(message: str) -> None:

@@ -6,11 +6,10 @@ pet includes a small chat dialog whose replies use the DSH-configured model.
 Credentials stay owned by DSH: the plugin reads no key files and starts no
 second Harness.
 
-The latest official release is **0.2.2** (daily recap and explicit-feedback
-style learning). The current unreleased candidate is **0.2.3-rc.1**, which adds
-pet conversation management and real DSH task sessions. See
-[`docs/CONVERSATIONS.md`](./docs/CONVERSATIONS.md) for the candidate feature.
-For user workflows and feature details, see the
+The latest official release is **0.2.3** (pet conversation management and real
+DSH task sessions, on top of 0.2.2's daily recap and explicit-feedback style
+learning). See [`docs/CONVERSATIONS.md`](./docs/CONVERSATIONS.md) for the new
+feature. For user workflows and feature details, see the
 [Chinese user guide](./docs/USER-GUIDE.zh-CN.md); for setup, diagnostics, and
 data handling, see [`docs/INSTALL.md`](./docs/INSTALL.md). Release artifacts are
 produced by `npm run release:check`.
@@ -439,10 +438,10 @@ memory management, and automated regressions are complete. Core live checks have
 passed; remaining DSH scenarios are tracked separately in the validation record.
 Config settings, portable Python discovery, isolated environment setup and
 candidate-package checks are implemented. The latest official release is
-`0.2.2`; the current unreleased candidate is `0.2.3-rc.1` (pet conversation
-management and real DSH task sessions). Timers/reminders, relationship/emotion
+`0.2.3` (pet conversation management and real DSH task sessions).
+Timers/reminders, relationship/emotion
 state, proactive care, event memory, daily review and the current reliability
-fixes are included in the candidate. A bundled Python executable remains a
+fixes are included in the release. A bundled Python executable remains a
 future delivery option, not a blocker for the documented Python-environment
 delivery option.
 
