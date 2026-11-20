@@ -15,6 +15,15 @@ const packed = spawnSync(process.execPath, [npm, 'pack', '--json', '--ignore-scr
 assert.equal(packed.status, 0, packed.stderr || packed.error?.message)
 const [result] = JSON.parse(packed.stdout)
 const files = result.files.map(file => file.path)
+const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'))
+assert.equal(result.version, manifest.version, 'Packed version must match source')
+assert.equal(lock.version, manifest.version, 'Lock version must match source')
+assert.equal(lock.packages[''].version, manifest.version, 'Lock root version must match source')
+assert.equal(readFileSync(join(root, 'python/deskpet_bridge.py'), 'utf8').match(/^VERSION = "([^"]+)"/m)?.[1], manifest.version, 'Python version must match source')
+for (const expected of ['docs/USER-GUIDE.zh-CN.md', 'docs/CONVERSATIONS.md', 'docs/DAILY-REVIEW.md', `docs/RELEASE-NOTES-${manifest.version}.md`]) {
+  assert.ok(files.includes(expected), `Missing user documentation: ${expected}`)
+}
 for (const expected of ['index.js', 'daily-review.js', 'dsh-sessions.js', 'config.js', 'python-runtime.js', 'cordis.patch.yml', 'python/deskpet_bridge.py', 'python/pet_windows.py', 'python/conversation_panel.py', 'requirements.txt', 'scripts/setup.ps1', 'scripts/doctor.ps1', 'scripts/python-common.ps1', 'docs/INSTALL.md']) {
   assert.ok(files.includes(expected), `Missing packed file: ${expected}`)
 }

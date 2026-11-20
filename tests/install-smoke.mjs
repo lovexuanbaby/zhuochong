@@ -7,12 +7,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const root = fileURLToPath(new URL('../', import.meta.url))
 const archive = resolve(process.argv[2])
 const python = process.argv[3]
+const offline = !process.argv.includes('--online')
 assert.ok(python, 'Pass a Python interpreter with PySide6 Essentials installed')
 mkdirSync(join(root, 'build'), {recursive: true})
 const fixture = mkdtempSync(join(root, 'build', '中文 插件安装-'))
 writeFileSync(join(fixture, 'package.json'), JSON.stringify({name: 'deskpet-install-check', private: true, type: 'module'}))
 const npm = process.env.npm_execpath || join(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js')
-const install = spawnSync(process.execPath, [npm, 'install', archive, '--prefix', fixture, '--ignore-scripts', '--offline', '--no-audit', '--no-fund'], {
+const install = spawnSync(process.execPath, [npm, 'install', archive, '--prefix', fixture, '--ignore-scripts', ...(offline ? ['--offline'] : []), '--no-audit', '--no-fund'], {
   encoding: 'utf8', windowsHide: true, timeout: 60_000,
 })
 assert.equal(install.status, 0, install.stderr || install.error?.message)
@@ -32,6 +33,8 @@ const ctx = {
 const options = {
   pythonPath: python, pingIntervalMs: 60_000, handshakeTimeoutMs: 15_000,
   chatHistoryPath: join(fixture, 'data/history.json'), chatMemoryPath: join(fixture, 'data/memory.json'),
+  chatTimerPath: join(fixture, 'data/timers.json'), chatCompanionPath: join(fixture, 'data/companion.json'),
+  chatEventPath: join(fixture, 'data/events.json'), chatDailyPath: join(fixture, 'data/daily-review.json'),
   chatMemoryEnabled: false,
 }
 try {
@@ -59,6 +62,6 @@ await dispose?.()
 assert.ok(records.some(record => record.join(' ').includes('PySide6')), 'missing dependency is explained in Python diagnostics')
 assert.equal(listeners.size, 0)
 
-const result = {ok: true, fixture, checks: ['Offline archive installation with dependencies', 'Schema exported by installed package', 'Real Python bridge under Chinese/space plugin path', 'Activity/result forwarding and cleanup', 'Missing Python guidance and cleanup', 'Missing PySide6 guidance and cleanup']}
+const result = {ok: true, fixture, checks: [`${offline ? 'Offline' : 'Online'} archive installation with dependencies`, 'Schema exported by installed package', 'Real Python bridge under Chinese/space plugin path', 'Activity/result forwarding and cleanup', 'Missing Python guidance and cleanup', 'Missing PySide6 guidance and cleanup']}
 writeFileSync(join(root, 'build/install-test-results.json'), JSON.stringify(result, null, 2))
 console.log(JSON.stringify(result, null, 2))
