@@ -7,8 +7,8 @@ const clean = (value, limit = 180) => typeof value === 'string'
   ? value.replace(/\b(?:sk-|gh[pousr]_|github_pat_)[A-Za-z0-9_-]{12,}/gu, '[已隐藏凭据]').replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim().slice(0, limit) : ''
 const textOf = content => Array.isArray(content) ? content.filter(b => b?.type === 'text').map(b => clean(b.text)).join(' ').slice(0, 180) : ''
 const statusLabel = value => ({running: '进行中', completed: '已结束', error: '失败', aborted: '中止', other: '其他结束', unknown: '待确认'})[value] || '待确认'
-export const localDay = (time = Date.now()) => {
-  const parts = new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'}).formatToParts(new Date(time))
+export const localDay = (time = Date.now(), timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone) => {
+  const parts = new Intl.DateTimeFormat('en-CA', {timeZone, year: 'numeric', month: '2-digit', day: '2-digit'}).formatToParts(new Date(time))
   const fields = Object.fromEntries(parts.map(part => [part.type, part.value]))
   return `${fields.year}-${fields.month}-${fields.day}`
 }

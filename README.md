@@ -6,28 +6,37 @@ pet includes a small chat dialog whose replies use the DSH-configured model.
 Credentials stay owned by DSH: the plugin reads no key files and starts no
 second Harness.
 
-The current release is **0.2.2** (daily recap and explicit-feedback style learning).
-The previous release is **0.2.1-rc.2**. See
-[`docs/INSTALL.md`](./docs/INSTALL.md) for setup, diagnostics, settings, and data
-handling. Release artifacts are produced by `npm run release:check`.
+The latest official release is **0.2.2** (daily recap and explicit-feedback
+style learning). The current unreleased candidate is **0.2.3-rc.1**, which adds
+pet conversation management and real DSH task sessions. See
+[`docs/CONVERSATIONS.md`](./docs/CONVERSATIONS.md) for the candidate feature.
+For user workflows and feature details, see the
+[Chinese user guide](./docs/USER-GUIDE.zh-CN.md); for setup, diagnostics, and
+data handling, see [`docs/INSTALL.md`](./docs/INSTALL.md). Release artifacts are
+produced by `npm run release:check`.
 
 ## Files
 
 | Path | Purpose |
 |---|---|
 | [`index.js`](./index.js) | Cordis Host plugin, child-process lifecycle, JSON protocol, logging |
+| [`daily-review.js`](./daily-review.js), [`dsh-sessions.js`](./dsh-sessions.js) | Daily work journal/style feedback and Host-owned DSH session adapter |
 | [`config.js`](./config.js), [`python-runtime.js`](./python-runtime.js) | Real Schemastery settings schema and portable interpreter discovery |
 | [`scripts/setup.ps1`](./scripts/setup.ps1), [`scripts/doctor.ps1`](./scripts/doctor.ps1) | Isolated Python environment installation and read-only diagnosis |
-| [`python/deskpet_bridge.py`](./python/deskpet_bridge.py) | Python test peer: `ping` → `pong`, `shutdown` → `bye`, task-state and chat routing |
-| [`python/pet_windows.py`](./python/pet_windows.py) | Desktop-pet window: frameless always-on-top robot plus the chat dialog |
+| [`python/deskpet_bridge.py`](./python/deskpet_bridge.py) | Python entry point: protocol dispatch, task-state and chat routing |
+| [`python/pet_windows.py`](./python/pet_windows.py), [`python/conversation_panel.py`](./python/conversation_panel.py) | Desktop-pet window and inline conversation/session controls |
 | [`requirements.txt`](./requirements.txt) | Pinned UI dependency (`PySide6-Essentials==6.12.0`) |
 | [`python/pet.py`](./python/pet.py) | Legacy stdin/stdout test peer (not spawned by the plugin) |
 | [`cordis.patch.yml`](./cordis.patch.yml) | Bundle patch that inserts the `deskpet` row and configures Python |
-| [`package.json`](./package.json) | Bundle manifest (`dsh.bundle.patch`) and exports |
+| [`package.json`](./package.json) | Bundle manifest (`dsh.bundle.patch`) and packed file list |
 | [`tests/bridge-smoke.mjs`](./tests/bridge-smoke.mjs) | Host-contract smoke test using a mock `ctx` |
 | [`tests/chat-host-smoke.mjs`](./tests/chat-host-smoke.mjs) | Direct-model chat smoke test with mock `llm`/`agentDefaultModel` services |
-| [`tests/chat-ui-smoke.py`](./tests/chat-ui-smoke.py) | Offscreen chat-dialog smoke test (submit, reply, failure, long text) |
+| [`tests/conversations-smoke.mjs`](./tests/conversations-smoke.mjs), [`tests/conversations-ui-smoke.py`](./tests/conversations-ui-smoke.py) | Pet-conversation isolation and DSH session contract/UI |
+| [`tests/daily-review-smoke.mjs`](./tests/daily-review-smoke.mjs), [`tests/daily-review-ui-smoke.py`](./tests/daily-review-ui-smoke.py) | Daily journal/style feedback and its Qt UI |
+| [`tests/chat-ui-smoke.py`](./tests/chat-ui-smoke.py), [`tests/memory-window-smoke.py`](./tests/memory-window-smoke.py) | Offscreen chat UI and real-Qt memory-window lifecycle |
 | [`test.mjs`](./test.mjs) | Legacy manual protocol test (not part of the automated suite) |
+| [`docs/USER-GUIDE.zh-CN.md`](./docs/USER-GUIDE.zh-CN.md), [`docs/INSTALL.md`](./docs/INSTALL.md) | User workflows and installation |
+| [`docs/CONVERSATIONS.md`](./docs/CONVERSATIONS.md), [`docs/DAILY-REVIEW.md`](./docs/DAILY-REVIEW.md) | Candidate conversation and daily-review boundaries |
 | [`locale/en.json`](./locale/en.json), [`locale/zh.json`](./locale/zh.json) | Plugin title and description |
 | [`icon.svg`](./icon.svg) | Original plugin icon |
 
@@ -37,7 +46,7 @@ Verified against the Desktop runtime that loaded this plugin:
 
 | Item | Value |
 |---|---|
-| Desktop runtime package | `@deepseek-ai/dsh-desktop-runtime` **0.2.2-rc.3** |
+| Desktop runtime package | `@deepseek-ai/dsh-desktop-runtime` **0.2.2-rc.5** |
 | Host framework | `@deepseek-ai/cordis` **4.1.0** |
 | Node used by the runtime | **24.21.0** |
 | Python used in local verification | **3.14.6**, including a fresh isolated environment |
@@ -237,12 +246,26 @@ None of this touches a DSH session either: `chat-history.json` and
 
 ## Configuration
 
+### Pet conversations and real DSH tasks
+
+The **会话** panel switches between independent pet conversations and real DSH
+task sessions. Pet conversations support new/select/clear/delete/clear-all with
+inline confirmation and atomic storage; memories, events and daily records are
+separate. DSH mode lists workspaces/sessions, creates sessions through the Host,
+queues prompts, shows public replies, cancels the current turn and archives idle
+sessions. Archive is not permanent deletion. Approvals stay in the DSH UI.
+
+In pet mode, explicit requests such as **总结今天的工作** can include the bounded
+daily journal across observed DSH sessions. It does not retrospectively scan old
+DSH logs. See [`docs/CONVERSATIONS.md`](./docs/CONVERSATIONS.md) for limits.
+
 ### Daily recap and style feedback
 
 Open **日报** in the pet chat dialog to view daily work records. The collector
 records new DSH task events after activation, with bounded user-title/public-reply
 excerpts, outcomes and tool counts. It excludes reasoning, tool arguments and
-raw tool output. Days use `Asia/Shanghai`; retention is 30 days / 300 task turns.
+raw tool output. Days use the Host local timezone; retention is 30 days / 300
+task turns.
 
 Viewing a recap is local. **模型生成回顾** makes one call to the configured DSH
 model using the selected day's latest 50 task summaries. The UI shows the
@@ -312,6 +335,8 @@ The active values are in [`cordis.patch.yml`](./cordis.patch.yml):
 | `chatEventUpdateEveryTurns` | `4` | Completed turns between event-memory extractions |
 | `chatEventMaxEvents` | `50` | Maximum stored event memories |
 | `chatEventPath` | `$DSH_HOME/deskpet/events.json` | Event-memory persistence file |
+| `chatDailyEnabled` | `true` | Record post-activation DSH task summaries for daily review/style feedback |
+| `chatDailyPath` | same dir as history, `daily-review.json` | Daily-review and style-preference file |
 
 The Python script path is **not** configurable: it is resolved from the plugin
 module URL as `python/deskpet_bridge.py`, so moving or renaming the plugin
@@ -364,8 +389,12 @@ hand-edit the profile's `package.json` or `cordis.patch.yml` to install it.
 |---|---|---|
 | `tests/config-smoke.mjs` | native schema shape, defaults, invalid inputs, interpreter selection | 10/10 |
 | `tests/chat-host-smoke.mjs` | request shape, context, history persistence, long-term memory, stable-ID memory management, stale-write protection, failures, timeout, cleanup | 25/25 |
+| `tests/conversations-smoke.mjs` | pet-conversation isolation/cleanup, DSH list/create/prompt/cancel/archive contract, edited-page safety, cross-session recap | 11/11 |
+| `tests/daily-review-smoke.mjs` | task collection, privacy filtering, timezone boundary, cache, style feedback, generation race/timeout, corrupted data | 15/15 |
 | `tests/chat-ui-smoke.py` | dialog submit/reply/continuation/error, history restore, date dividers, inline memory confirmation, save failure, timeout and stale responses | 40/40 |
+| `tests/conversations-ui-smoke.py` | mode routing, inline confirmation, failure recovery, stale-response isolation, Qt window behavior | 10/10 |
 | `tests/memory-window-smoke.py` | real Qt loop: inline confirm/cancel, window lifetime, animation, ping and explicit shutdown | 7/7 |
+| `tests/daily-review-ui-smoke.py` | daily entry, date switching, model request, progress, feedback revision, late responses, retry and empty data | 10/10 |
 | `tests/bridge-smoke.mjs` | apply cleanup, ping/pong, process exit, idempotent stop, state forwarding, EOF and timeout termination | 8/8 |
 | `tests/agent-status-smoke.mjs` | availability/results, concurrency, continuous turns, stale instances/events, startup, cleanup | Passed |
 | `tests/agent-status-ui-smoke.py` | 11 queue → Qt transitions, result deadlines, concurrency, legacy/malformed input, ping/shutdown | Passed |
@@ -409,12 +438,13 @@ implementation and live-verification checklist is in
 memory management, and automated regressions are complete. Core live checks have
 passed; remaining DSH scenarios are tracked separately in the validation record.
 Config settings, portable Python discovery, isolated environment setup and
-candidate-package checks are implemented. The user confirmed acceptance testing
-passed on November 9, 2026 and authorized the `0.2.0-rc.1` prerelease.
-Timers/reminders, relationship/emotion state, proactive care, event memory and
-the current reliability fixes are included in the `0.2.1-rc.2` candidate.
-A bundled Python executable remains a future delivery option, not a blocker for
-the documented Python-environment delivery option.
+candidate-package checks are implemented. The latest official release is
+`0.2.2`; the current unreleased candidate is `0.2.3-rc.1` (pet conversation
+management and real DSH task sessions). Timers/reminders, relationship/emotion
+state, proactive care, event memory, daily review and the current reliability
+fixes are included in the candidate. A bundled Python executable remains a
+future delivery option, not a blocker for the documented Python-environment
+delivery option.
 
 See [`docs/RELEASE-STATUS.md`](./docs/RELEASE-STATUS.md) in the source checkout
 for the completed checks and user acceptance record.

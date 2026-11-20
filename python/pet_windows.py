@@ -20,6 +20,7 @@ import math
 import random
 import sys
 from datetime import datetime
+from conversation_panel import ConversationPanel
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import (
@@ -180,6 +181,10 @@ class ChatDialog(QDialog):
         self._messages: list[tuple[str, str]] = []
         self._last_date: str | None = None
         self._memory_count = 0
+        self._conversation_mode = "pet"
+        self._dsh_session_id = None
+        self._dsh_pending_id = None
+        self._dsh_running = False
         self._timers: list[float] = []
         self._memory_dialog: MemoryDialog | None = None
         self._review_dialog: DailyReviewDialog | None = None
@@ -211,6 +216,7 @@ class ChatDialog(QDialog):
         dot = QLabel("●", title_bar)
         dot.setStyleSheet(f"color: {TEAL_MID}; font-size: 9pt;")
         title = QLabel("桌宠对话", title_bar)
+        self._title = title
         title.setStyleSheet(
             f"color: {CHAT_TITLE}; font: 600 12pt '{UI_FONT}';"
         )
@@ -241,6 +247,12 @@ class ChatDialog(QDialog):
         review_btn.setDefault(False)
         review_btn.setStyleSheet(memory_btn.styleSheet())
         review_btn.clicked.connect(self.open_daily_review)
+        sessions_btn = QPushButton("会话", title_bar)
+        sessions_btn.setAutoDefault(False)
+        sessions_btn.setDefault(False)
+        sessions_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        sessions_btn.setStyleSheet(memory_btn.styleSheet())
+        sessions_btn.clicked.connect(self.toggle_sessions)
         close_btn = QPushButton("✕", title_bar)
         close_btn.setFixedSize(24, 24)
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -259,9 +271,13 @@ class ChatDialog(QDialog):
         title_layout.addStretch(1)
         title_layout.addWidget(memory_btn)
         title_layout.addWidget(review_btn)
+        title_layout.addWidget(sessions_btn)
         title_layout.addWidget(close_btn)
         outer.addWidget(title_bar)
         outer.addWidget(hint)
+        self._session_panel = ConversationPanel(self)
+        self._session_panel.hide()
+        outer.addWidget(self._session_panel)
 
         self._scroll = QScrollArea(self)
         self._scroll.setWidgetResizable(True)
@@ -321,8 +337,16 @@ class ChatDialog(QDialog):
         # Enter 由输入框自己处理，按钮不做 dialog 的默认按钮。
         self._send_btn.setAutoDefault(False)
         self._send_btn.setDefault(False)
+        self._dsh_stop = QPushButton("停止本轮", self)
+        self._dsh_stop.setAutoDefault(False)
+        self._dsh_stop.setDefault(False)
+        self._dsh_stop.setStyleSheet(self._send_btn.styleSheet())
+        self._dsh_stop.setToolTip("停止当前轮；已排队输入仍由 DSH 管理")
+        self._dsh_stop.clicked.connect(self.stop_dsh)
+        self._dsh_stop.hide()
         input_row.addWidget(self._input, 1)
         input_row.addWidget(self._send_btn)
+        input_row.addWidget(self._dsh_stop)
         outer.addLayout(input_row)
 
         self._append_bubble(WELCOME_TEXT, "pet")
@@ -372,6 +396,7 @@ class ChatDialog(QDialog):
         self._input.setEnabled(True)
         self._send_btn.setEnabled(True)
         self._input.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.sync_input_state()
 
     def append_notice(self, text: str, kind: str = "pet") -> None:
         """不改变等待状态地追加一条消息（例如主机事件提示）。"""
@@ -422,6 +447,11 @@ class ChatDialog(QDialog):
         self._update_hint()
 
     def _update_hint(self) -> None:
+        if self._conversation_mode == "dsh":
+            self._title.setText("DSH 任务")
+            self._hint.setText(f"DSH 任务 · {(self._dsh_session_id or '未选择')[:8]} · {'运行中' if self._dsh_running else '空闲'}")
+            return
+        self._title.setText("桌宠对话")
         parts: list[str] = []
         if self._timers:
             parts.append(f"⏳ {len(self._timers)} 个计时 · {self._format_remaining(min(self._timers))}")
@@ -446,6 +476,100 @@ class ChatDialog(QDialog):
         self._memory_dialog.raise_()
         self._memory_dialog.activateWindow()
         self._memory_dialog.refresh()
+
+    def toggle_sessions(self) -> None:
+        visible = not self._session_panel.isVisible()
+        self._session_panel.setVisible(visible)
+        self.setFixedHeight(700 if visible else 470)
+        self.show_near(self._owner)
+        if visible:
+            self._session_panel.refresh()
+
+    def sync_input_state(self) -> None:
+        managing = self._session_panel._pending is not None and self._session_panel._pending_action != "list"
+        ready = not self._pending and not managing and (self._conversation_mode == "pet" or bool(self._dsh_session_id))
+        self._input.setEnabled(ready)
+        self._send_btn.setEnabled(ready)
+        self._session_panel.update_controls()
+
+    def activate_pet_conversation(self, entries) -> None:
+        self._conversation_mode = "pet"
+        self._dsh_session_id = None
+        self._dsh_running = False
+        self._dsh_stop.hide()
+        self._input.setPlaceholderText("说点什么…（Enter 发送，Esc 收起）")
+        self.set_history(entries)
+        self._update_hint()
+        callback = getattr(self._owner, "on_conversations", None)
+        if callback:
+            try: callback({"mode": "dsh", "action": "detach"})
+            except Exception: pass
+
+    def activate_dsh_conversation(self, view) -> None:
+        self._conversation_mode = "dsh"
+        self._dsh_session_id = view.get("sessionId")
+        self._dsh_stop.show()
+        self._input.setPlaceholderText("发送到 DSH（运行时追加到队列）")
+        self.set_dsh_view(view)
+
+    def set_dsh_view(self, view) -> None:
+        if self._conversation_mode != "dsh" or view.get("sessionId") != self._dsh_session_id:
+            return
+        pending = self._pending
+        entries = view.get("entries") or []
+        self.set_history(entries)
+        if not entries:
+            self._clear_messages()
+            self._append_bubble("DSH 任务会话。发送内容会交给 DSH Agent 执行；权限确认请在 DSH 主窗口处理。", "pet")
+        self._pending = pending
+        self._dsh_running = bool(view.get("running"))
+        self._input.setEnabled(bool(self._dsh_session_id) and not pending)
+        self._send_btn.setEnabled(bool(self._dsh_session_id) and not pending)
+        self._dsh_stop.setEnabled(self._dsh_running)
+        self._update_hint()
+        self.sync_input_state()
+        if view.get("waiting"):
+            self._show_status("等待确认，请在 DSH 主窗口处理")
+        elif self._dsh_running:
+            self._show_status("DSH 正在执行任务")
+        else:
+            self._hide_status()
+        self._session_panel._note.setText(view.get("note") or "DSH 会话记录由宿主保存。")
+
+    def dsh_accepted(self, message) -> None:
+        if self._conversation_mode != "dsh" or message.get("sessionId") != self._dsh_session_id or message.get("id") != self._dsh_pending_id:
+            return
+        self._pending = False
+        self._dsh_pending_id = None
+        self._dsh_running = True
+        self._input.setEnabled(True)
+        self._send_btn.setEnabled(True)
+        self._dsh_stop.setEnabled(True)
+        self._update_hint()
+        self._show_status("DSH 已接收任务")
+        self.sync_input_state()
+
+    def dsh_progress(self, message) -> None:
+        if self._conversation_mode == "dsh" and message.get("sessionId") == self._dsh_session_id:
+            self._show_status(str(message.get("text") or "DSH 正在执行"))
+
+    def dsh_error(self, message) -> None:
+        if message.get("action") in ("prompt", "cancel"):
+            if self._conversation_mode != "dsh" or message.get("sessionId") != self._dsh_session_id:
+                return
+            if message.get("action") == "prompt" and message.get("id") == self._dsh_pending_id:
+                self._dsh_pending_id = None
+                self.finish(str(message.get("message") or "DSH 发送失败"), ok=False)
+            else:
+                self._show_status(str(message.get("message") or "DSH 操作失败"))
+        else:
+            self._session_panel.set_error(message)
+
+    def stop_dsh(self) -> None:
+        callback = getattr(self._owner, "on_conversations", None)
+        if callback and self._dsh_session_id:
+            try: callback({"mode": "dsh", "action": "cancel", "sessionId": self._dsh_session_id})
+            except Exception as error: self._show_status(str(error))
 
     def set_memory_facts(self, items: object, revision=0, request_id=None, enabled=True) -> None:
         if self._memory_dialog is None:
@@ -483,6 +607,7 @@ class ChatDialog(QDialog):
             item = self._messages_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
                 widget.deleteLater()
         self._messages.clear()
         self._last_date = None
@@ -493,21 +618,28 @@ class ChatDialog(QDialog):
 
     def submit(self) -> None:
         text = self._input.text().strip()
-        if not text or self._pending:
+        managing = self._session_panel._pending is not None and self._session_panel._pending_action != "list"
+        if not text or self._pending or managing:
             return
         self._pending = True
+        self._session_panel.update_controls()
         self._input.clear()
         self._input.setEnabled(False)
         self._send_btn.setEnabled(False)
         self._append_bubble(text, "user", datetime.now().isoformat())
         self._show_status("等待 DSH 回复")
 
-        submit = getattr(self._owner, "on_chat_submit", None)
+        submit = getattr(self._owner, "on_dsh_submit" if self._conversation_mode == "dsh" else "on_chat_submit", None)
         if submit is None:
             self.finish("还没有连接到 DSH（主机插件未接线）", ok=False)
             return
         try:
-            submit(text)
+            if self._conversation_mode == "dsh":
+                if not self._dsh_session_id:
+                    raise RuntimeError("请先选择或创建 DSH 会话")
+                self._dsh_pending_id = submit(self._dsh_session_id, text)
+            else:
+                submit(text)
         except Exception as error:  # noqa: BLE001 - 桥接失败必须回显给用户
             self.finish(f"发送失败：{error}", ok=False)
 
@@ -518,6 +650,7 @@ class ChatDialog(QDialog):
         if date_label is not None:
             self._append_date_divider(date_label)
         bubble = QLabel(text)
+        bubble.setTextFormat(Qt.TextFormat.PlainText)
         bubble.setWordWrap(True)
         bubble.setMaximumWidth(256)
         bubble.setSizePolicy(
@@ -1109,6 +1242,8 @@ class PetWindow(QWidget):
         # 对话窗口（惰性创建）与桥接层回调
         self._chat: ChatDialog | None = None
         self.on_chat_submit = None
+        self.on_dsh_submit = None
+        self.on_conversations = None
         self.on_memory_list = None
         self.on_memory_delete = None
         self.on_daily_review = None
@@ -1199,7 +1334,21 @@ class PetWindow(QWidget):
 
     def set_chat_history(self, entries: object) -> None:
         """用落盘历史重建对话框内容（插件启动时调用）。"""
-        self._ensure_chat().set_history(entries)
+        chat = self._ensure_chat()
+        if chat._conversation_mode == "pet":
+            chat.set_history(entries)
+            chat.sync_input_state()
+
+    def conversation_message(self, message) -> None:
+        chat = self._ensure_chat()
+        kind = message.get("type")
+        if kind in ("chat/sessions", "dsh/sessions"):
+            chat._session_panel.set_result(message)
+        elif kind == "chat/sessions/error": chat._session_panel.set_error(message)
+        elif kind == "dsh/view": chat.set_dsh_view(message)
+        elif kind == "dsh/accepted": chat.dsh_accepted(message)
+        elif kind == "dsh/progress": chat.dsh_progress(message)
+        elif kind == "dsh/error": chat.dsh_error(message)
 
     def set_memory_count(self, count: object) -> None:
         """更新“已记住 N 件事”提示，让用户看到桌宠在变懂自己。"""
@@ -1256,11 +1405,13 @@ class PetWindow(QWidget):
 
     def chat_reply(self, text: str, ok: bool = True) -> None:
         """显示模型回复（或错误）。"""
-        self._ensure_chat().finish(text, ok=ok)
+        chat = self._ensure_chat()
+        if chat._conversation_mode == "pet": chat.finish(text, ok=ok)
 
     def chat_error(self, text: str) -> None:
         """显示发送/会话失败的原因。"""
-        self._ensure_chat().finish(text, ok=False)
+        chat = self._ensure_chat()
+        if chat._conversation_mode == "pet": chat.finish(text, ok=False)
 
     def _face_rect(self) -> QRectF:
         """屏幕脸在画布内的命中区域（用于点击打开对话框）。"""

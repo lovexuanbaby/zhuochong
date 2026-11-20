@@ -1,13 +1,13 @@
 # 安装与发布说明（Windows）
 
-本版为 `0.2.1-rc.2` 本地安装候选包，沿用现有 DSH 模型和凭据。交付方式为 **JS 插件包 + 独立 Python 虚拟环境**，不捆绑 Python 可执行文件。
+适用于 dsh-deskpet Windows 发行包，沿用现有 DSH 模型和凭据。交付方式为 **JS 插件包 + 独立 Python 虚拟环境**，不捆绑 Python 可执行文件。完整功能请见[使用手册](./USER-GUIDE.zh-CN.md)。
 
 ## 前提
 
 - Windows；DSH Desktop 已安装并配置模型。
 - Python 3.10 或更高版本；`PySide6-Essentials` 固定为 `6.12.0`（包含窗口所需 Qt 模块，不安装 WebEngine 等无关组件）。
 - 安装依赖时需要能访问 Python 包源（默认 PyPI）。`PySide6-Essentials` 的 wheel 约 80 MB，网络较慢或默认源不可达时，用 `-PipIndex` 指定镜像。此过程不会读取模型密钥。
-- 已验证的 DSH 接口基线为 `0.2.2-rc.3`；其他版本需重新确认。
+- 已验证的 DSH 接口基线为 `0.2.2-rc.5`；其他版本需重新确认。
 
 ## 安装
 

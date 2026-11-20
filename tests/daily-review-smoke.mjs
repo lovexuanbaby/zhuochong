@@ -50,7 +50,7 @@ await check('Concurrent parent/child tasks retain their own outcomes', () => {
   assert.deepEqual(h.review.snapshot().facts.map(t => t.status), ['completed', 'aborted'])
 })
 await check('Days follow the local calendar and old work is pruned', () => {
-  assert.equal(localDay(Date.parse('2026-11-18T16:30:00Z')), '2026-11-19', 'daily boundary follows Shanghai time')
+  assert.equal(localDay(Date.parse('2026-11-18T16:30:00Z'), 'Asia/Shanghai'), '2026-11-19', 'explicit time-zone boundary')
   const midnight = Date.parse('2026-11-20T00:01:00+08:00')
   const h = fixture({now: () => midnight})
   task(h.review, {at: midnight - 120_000})

@@ -39,7 +39,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from pet_windows import PetWindow, RESULT_STATES, STATE_LABELS
-VERSION = "0.2.2"
+VERSION = "0.2.3-rc.1"
 
 
 def log(message: str) -> None:
@@ -129,6 +129,13 @@ def main() -> int:
         log(f"chat #{chat_id} → host ({len(chat_text)} chars)")
 
     window.on_chat_submit = send_chat
+    def send_dsh_chat(session_id, text):
+        request_id = next_chat["id"]
+        next_chat["id"] += 1
+        send({"type": "dsh/prompt", "id": request_id, "sessionId": session_id, "text": text})
+        return request_id
+    window.on_dsh_submit = send_dsh_chat
+    window.on_conversations = lambda message: send({"type": "conversations", **message})
     window.on_memory_list = lambda request_id: send({"type": "memory/list", "id": request_id})
     window.on_memory_delete = lambda fact_id, revision, request_id: send({
         "type": "memory/delete", "id": request_id, "factId": fact_id, "revision": revision,
@@ -191,6 +198,9 @@ def main() -> int:
                 window.set_chat_history(entries)
                 count = len(entries) if isinstance(entries, list) else 0
                 log(f"chat history restored: {count} messages")
+
+            elif message_type in ("chat/sessions", "chat/sessions/error", "dsh/sessions", "dsh/view", "dsh/accepted", "dsh/progress", "dsh/error"):
+                window.conversation_message(message)
 
             elif message_type == "chat/memory":
                 count = message.get("count")
